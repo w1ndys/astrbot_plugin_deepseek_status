@@ -1,0 +1,133 @@
+# 需求实施计划
+
+- [ ] 1. 落仓库骨架与插件元数据
+  - [ ] 1.1 建目录与包文件
+    - 建 `entity/`、`data/`、`business/`、`tests/`、`tests/fixtures/`、`dashboard/` 目录，各 Python 包写 `__init__.py`（设计「Architecture」分层）
+    - `__init__.py` 只声明这是插件包，插件类注册留在 `main.py`（需求 11.1、11.3）
+    - 写 `.gitignore`：忽略 `__pycache__/`、`*.db`、`node_modules/`、虚拟环境；不要忽略 `.agents/`、`.ohmyagent/`
+  - [ ] 1.2 写 `metadata.yaml`（需求 11.2）
+    - `name`、`display_name`、`short_desc`、`desc`、`version: 0.1.0`、`author`、`repo`、`astrbot_version: ">=4.13"`、`support_platforms: [aiocqhttp]`
+  - [ ] 1.3 写 `_conf_schema.json` 五个非密钥字段（需求 1.1–1.5；设计「Data Models」字段表）
+    - `enabled`（bool，默认 false）、`poll_interval_seconds`（int，默认 60，30–3600）、`notify_enabled`（bool，默认 true）、`event_retention_days`（int，默认 30，1–365）、`failure_threshold`（int，默认 3，1–10）
+    - 本项目没有密钥字段，不需要 `secret: true`
+  - [ ] 1.4 写 `AGENTS.md` 并拷入 human-coding-contract
+    - 写明本仓默认启用 `human-coding-contract` 的风格约束
+    - 从 ai-kit 拷 `skills/human-coding-contract/` 到本仓 `.agents/skills/` 与 `.ohmyagent/skills/`（astrbot-new-plugin skill 脚手架步骤 4）
+  - [ ] 1.5 写 `tests/` 可跑桩（需求 11.4；astrbot-new-plugin 验收清单）
+    - 一个 `unittest.TestCase`，`python3.12 -m unittest` 能跑通并通过，不 import `astrbot`
+
+- [ ] 2. 实体层：固定值与数据形状
+  - [ ] 2.1 `entity/constants.py`（设计「实体层」表）
+    - `PLUGIN_NAME`、`STATUS_PAGE_BASE`、`PAGE_ID`、`FEED_ATOM_URL`、`REQUEST_TIMEOUT_SECONDS`
+    - `COMPONENT_SEVERITY`（operational 0 / degraded 1 / partial_outage 2 / full_outage 3）、`CLOSED_EVENT_STATUSES`
+    - `EVENT_LIST_LOOKBACK_SECONDS`、`EVENT_LIST_LOOKAHEAD_SECONDS`、`BACKOFF_MAX_MULTIPLIER`
+    - 五类 `NOTIFY_*` 常量、`COMMAND_NAME`、`DISPLAY_TIMEZONE`
+  - [ ] 2.2 `entity/models.py` 五个 dataclass（设计「内存结构」）
+    - `Component`、`StatusChange`、`Snapshot`、`Subscription`、`Notification`，字段严格按设计；`entity/` 不 import `astrbot`
+  - [ ] 2.3 实体层单测
+    - 校验严重度表取值与顺序、默认时区对象可用
+
+- [ ] 3. 数据层：连库、建表与三个 store
+  - [ ] 3.1 `data/db.py`（需求 8.1、8.5；设计「关键约定」第一条）
+    - `get_db_path()` 用 `StarTools.get_data_dir(PLUGIN_NAME)` **显式传插件名**（否则从子模块调用会抛 `RuntimeError`）
+    - `connect(db_path)` 接收显式路径并设 `row_factory`；`init_db(conn)` 建 `subscriptions` / `events` / `push_records` / `component_states` 四张表，含两条 `UNIQUE` 约束
+  - [ ] 3.2 `data/subscription_store.py`（需求 5.2–5.4、6.2–6.5、8.1）
+    - 九个函数：`list_subscriptions`、`get_by_session`、`get_by_id`、`subscribe_session`（已存在则保留原关注组件与开关）、`set_components`、`disable_session`、`create`、`update`、`delete`
+  - [ ] 3.3 `data/event_store.py`（需求 3.5–3.7、4.3、8.2–8.4）
+    - 九个函数：`known_event_statuses`、`record_event`（按 `(change_id, status)` 插入并返回 opened/updated/resolved/none）、`record_component_status`、`record_push`、`list_events`、`list_pushes`、`list_pending_retry`、`mark_retried`、`purge_expired`
+    - `latest_update_key` 与 `change_type` 落库，供页面展示与将来放宽触发条件
+  - [ ] 3.4 `data/component_store.py`（需求 3.6、10.5）
+    - `load_statuses`、`save_status`、`prune_missing`
+  - [ ] 3.5 数据层单测（临时目录 SQLite，不 import `astrbot`）
+    - 订阅增删改、命令订阅重复时不覆盖关注组件、`UNIQUE(change_id, status)` 冲突时不新增行、待重试查询与 `mark_retried`、`purge_expired` 按保留天数删除、组件下架清理
+  - [ ] 3.6 数据层属性测试
+    - P1 幂等：同一 `(change_id, status)` 反复写入，`events` 恒为一行、`push_records` 受 `UNIQUE(session, dedup_key)` 约束（需求 3.5、设计 P1）
+    - P3 时间一致：任意写入路径产出的时间列都匹配 UTC ISO8601 带 `Z`（需求 8.5、设计 P3）
+    - P5 空清单语义：`component_ids` 空数组往返后仍是空数组且不被当成停用（需求 7.2、设计 P5）
+
+- [ ] 4. 检查点 - 确保所有测试通过，如有疑问请询问用户
+
+- [ ] 5. 业务层：采集与解析
+  - [ ] 5.1 `business/collector.py`（需求 2.1、2.3、2.4、2.6、10.4）
+    - `CollectorError`（请求失败的统一异常；解析层用 `ValueError`，两类分开记日志）、`fetch_summary_active`、`fetch_change_list`、`fetch_change_info`、`fetch_feed_atom`、`make_timeout`、`api_url`
+    - 用 `aiohttp`，统一 10 秒超时，带 `Accept: application/json`；非 200 或 JSON 解析失败抛 `CollectorError`
+  - [ ] 5.2 `business/parser_api.py`（需求 2.2、2.5、3.7、3.8；设计 P6、P9）
+    - `parse_summary_active`（结构不符抛 `ValueError`，信息含缺失或非法的字段名，触发降级）、`parse_component_statuses`（默认 operational，跳过 `resolved`/`completed`，按组件 ID 匹配取最严重）、`parse_change`、`latest_update_key`（`update_id` 为空时用 `at_seconds` 与状态拼接，缺 `updates` 返回空串）、`derive_overall_status`、`event_link`
+    - 明确不把已结束事件的 `affected_components[].status` 当故障级别
+  - [ ] 5.3 `business/parser_feed.py`（需求 2.5、2.10、7.4）
+    - `parse`（Atom entry → `StatusChange`，`change_id` 从 `urn:flashduty:change:{id}` 取，组件 ID 留空只保留名称）、`parse_affected_names`
+  - [ ] 5.4 解析单测与 fixture
+    - 落盘 `tests/fixtures/summary_active.json`、`change_list.json`、`feed_atom.xml` 实测样本
+    - 覆盖：组件解析、未结束事件解析、`latest_update_key` 两种退化、结构破坏抛 `ValueError` 且信息含字段名、feed 的 `Status:` 与组件名解析
+  - [ ] 5.5 属性测试
+    - P6 状态级联：任取组件状态集合，`overall` 恒等于 `COMPONENT_SEVERITY` 最大值（需求 2.2、设计 P6）
+    - P9 已结束事件不参与：把任意事件状态改成 `resolved` / `completed` 后，组件状态计算结果不变（需求 2.2、设计 P9）
+
+- [ ] 6. 业务层：判定、过滤与文案
+  - [ ] 6.1 `business/detector.py`（需求 2.9、3.1–3.6、3.7；设计 P1、P10）
+    - `event_dedup_key`、`component_dedup_key`、`source_failure_key`、`backoff_seconds`（`min(interval × 2^failures, interval × 4)`）、`diff_components`
+  - [ ] 6.2 `business/filtering.py`（需求 5.5、7.1–7.4；设计 P5、P8）
+    - `matched_component_ids`（逗号分隔、大小写不敏感、无匹配返回空列表）、`subscription_accepts`（空清单=全部）、`pick_recipients`、`names_to_component_ids`
+  - [ ] 6.3 `business/text.py`（需求 3.8、3.9、4.4–4.6、5.1、5.6；设计 P3）
+    - `to_local`（Unix 秒 → `Asia/Shanghai`）、`render_event`（区分故障与维护）、`render_component`、`render_source_failure`、`render_summary`、`render_status_reply`、`render_help`
+    - 文案写死在代码里，不做成配置项
+  - [ ] 6.4 单测
+    - 去重键生成、opened/updated/resolved/none 判定、退避秒数上限、关键字模糊匹配（含无匹配）、五类文案含链接与时间、维护与故障文案区分
+  - [ ] 6.5 属性测试
+    - P8 过滤正确：随机订阅清单与受影响组件集合下，「收到通知」与「交集非空或清单为空且非全局通知」等价（需求 7.1–7.3、设计 P8）
+    - 退避单调性：`backoff_seconds` 随失败次数不递减且恒 ≤ 轮询间隔 × 4（需求 2.9）
+
+- [ ] 7. 业务层：轮询编排
+  - [ ] 7.1 `business/monitor.py`（需求 2.5–2.11、4.1–4.3、8.4、8.6、8.7、10.1–10.3）
+    - `start`、`stop`、`run`（按 `backoff_seconds` 延长等待）、`_tick`（采集→解析→落库→推送→重试→清理）、`_collect`（主接口请求失败或接口结构异常即降级 feed，两类日志分开）、`_dispatch`、`retry_failed`、`push_summary`、`snapshot`、`baseline_only`
+    - 轮询顺序按设计：`summary/active` → `change/list`（窗口 = 上次检查 − 600 秒 → 现在 + 120 秒）→ 缺 `updates` 才 `change/info`
+  - [ ] 7.2 编排单测（用假采集函数替换网络层）
+    - 正常一轮、主接口失败降级、两路失败累计与阈值提醒、退避生效、推送失败重试一次、兜底不发组件通知、落库失败不推送、主接口返回 200 但结构缺字段时降级并记「接口结构异常」日志（用 `assertLogs`）
+  - [ ] 7.3 编排属性测试
+    - P4 快照一致：任一轮落库失败时内存快照与组件表都不变（需求 8.6、设计 P4）
+    - P7 降级不误报：feed 模式下的任意一轮都不写组件表、不产生 `component_changed` 通知（需求 2.10、设计 P7）
+    - P10 基线不刷屏：启动后首轮无论收到多少历史事件，`push_records` 都为空（需求 8.7、设计 P10）
+    - P2 重试一次：推送失败的记录最多被重试一次（需求 4.3、设计 P2）
+
+- [ ] 8. 检查点 - 确保所有测试通过，如有疑问请询问用户
+
+- [ ] 9. 入口层：命令与 Web API
+  - [ ] 9.1 `main.py` 插件类与生命周期（需求 11.3；设计「入口层」）
+    - `Plugin(Star)`：`__init__` 打开数据库、注册全部路由、注册命令、创建 `Monitor`；`initialize()` 启动轮询；`terminate()` 停止轮询并关连接
+    - 入口只做注册与转发，不直接执行 SQL
+  - [ ] 9.2 `dsstatus` 命令（需求 5.1–5.9）
+    - 无参数回状态摘要；`订阅` / `退订` / `帮助`；带组件关键字时按模糊匹配写关注清单，无匹配则列出可选组件
+    - 多人可用，参数解析按 AstrBot 的空白切分规则，帮助文案写明多组件用逗号分隔
+  - [ ] 9.3 配置与状态路由（需求 1.6、1.7、9.1–9.4、9.7）
+    - `GET/PUT /{PLUGIN}/settings`（读 schema 当前值、`save_config()` 写回、非对象请求体或类型不符返回 400）、`GET /{PLUGIN}/status`
+  - [ ] 9.4 订阅管理路由（需求 6.1–6.5、4.2、9.2）
+    - `GET/POST /{PLUGIN}/subscriptions`、`PUT/DELETE /{PLUGIN}/subscriptions/<sub_id>`
+    - 会话标识重复时返回失败原因；由停用改启用后立即调用 `monitor.push_summary(session)`
+  - [ ] 9.5 事件历史路由（需求 9.5）
+    - `GET /{PLUGIN}/events`：分页、按事件时间倒序、附带推送结果
+  - [ ] 9.6 入口层单测
+    - 请求体非对象与非法 `sub_id` 返回 400；页面响应不含密钥字段；命令参数四个分支（无参/订阅/退订/未知）
+
+- [ ] 10. 前端：dashboard 工程与三个视图
+  - [ ] 10.1 dashboard 工程骨架（设计「前端」表；照抄 `astrbot_plugin_fzxy` 的构建配置）
+    - `package.json`（antd ^6.6.5、react ^19.3.0、@ant-design/cssinjs ^2.1.2、vite ^8.3.3、typescript ^6.0.3）、`tsconfig.json`、`vite.config.ts`（`base: "./"`、`outDir: "../views/status"`、`cssCodeSplit: false`、iife、`assets/index.js`、改写 `type="module"` 的插件）
+    - `index.html`（`#root` + 宿主主题内联脚本）、`src/main.tsx`（`StyleProvider layer`）、`src/App.tsx`（`ConfigProvider` + 三 Tab，只改 React state）、`src/bridge.ts`、`src/style.css`
+  - [ ] 10.2 概览与全局配置视图（需求 9.1–9.4、9.7、4.2）
+    - 顶部显示整体状态、各组件状态、快照采集时间（本地时区并标注偏移）
+    - 手写五个非密钥字段表单，打开时读 schema 当前值，保存走 `PUT settings`
+  - [ ] 10.3 订阅管理视图（需求 6.1–6.5、4.2）
+    - 列表 + 新增/编辑/删除；关注组件多选（选项来自 `GET status` 返回的组件目录）；会话标识可手填；重复时显示后端返回的失败原因
+  - [ ] 10.4 事件历史视图（需求 9.5）
+    - 分页表格按事件时间倒序，含类型、状态、受影响组件、最近进展标识、链接；可展开查看推送结果
+  - [ ] 10.5 构建并提交产物（需求 11.6）
+    - `cd dashboard && npm run build`，产出 `views/status/index.html` + `views/status/assets/index.js` + `views/status/assets/style.css`
+  - [ ] 10.6 前端构建与产物检查
+    - `tsc --noEmit` 通过；产物 HTML 只有 `script defer` 与 `style.css` 两条引用，无 `type="module"`、无 `crossorigin`、无第二份 JS chunk，`index.js` 内无不带空格的外部 `from"./x.js"`
+
+- [ ] 11. 检查点 - 确保所有测试通过，如有疑问请询问用户
+
+- [ ] 12. 收尾与登记
+  - [ ] 12.1 写 `README.md`（安装方式、五个配置项、`dsstatus` 用法、三个页面说明、数据目录位置）
+  - [ ] 12.2 真实网络冒烟用例（默认 `skip`，设 `DEEPSEEK_STATUS_LIVE=1` 才跑；设计「Test Strategy」）
+    - 直连 `summary/active`、`change/list`、`feed.atom`，断言字段形状，证明解析对当前线上结构成立
+  - [ ] 12.3 在 `w1ndys/dev-cycle` 的 `projects/astrbot_plugin_deepseek_status/README.md` 登记本周期，并更新根 `README.md` 索引
