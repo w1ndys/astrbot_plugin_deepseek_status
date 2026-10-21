@@ -294,7 +294,7 @@ class PushSummaryTest(MonitorTestCase):
         monitor.next_snapshot = _snapshot()
         self.assertTrue(await monitor.push_summary("s1"))
         self.assertEqual(self.context.sent[0][0], "s1")
-        self.assertIn("本会话", self.context.sent[0][1])
+        self.assertIn("本群", self.context.sent[0][1])
         row = self.conn.execute(
             "SELECT notify_type, result FROM push_records"
         ).fetchone()

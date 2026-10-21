@@ -123,14 +123,18 @@ class SubscriptionStoreTest(StoreTestCase):
         sub = subscription_store.get_by_session(self.conn, self.SESSION)
         # 页面编辑前必须拿到主键；查不到就说明新增没成功，先在这里失败
         assert sub is not None
-        self.assertTrue(subscription_store.update(self.conn, sub.id, "新备注", False))
+        self.assertTrue(
+            subscription_store.update(self.conn, sub.id, self.SESSION, "新备注", False)
+        )
         updated = subscription_store.get_by_id(self.conn, sub.id)
         # 更新后必须还能查到，否则后面的备注与开关断言没有对象
         assert updated is not None
         self.assertEqual(updated.note, "新备注")
         self.assertFalse(updated.enabled)
         # 主键不存在时页面应收到失败，而不是误以为改成功
-        self.assertFalse(subscription_store.update(self.conn, 9999, "无", True))
+        self.assertFalse(
+            subscription_store.update(self.conn, 9999, self.SESSION, "无", True)
+        )
         self.assertTrue(subscription_store.delete(self.conn, sub.id))
         self.assertIsNone(subscription_store.get_by_id(self.conn, sub.id))
         self.assertFalse(subscription_store.delete(self.conn, sub.id))

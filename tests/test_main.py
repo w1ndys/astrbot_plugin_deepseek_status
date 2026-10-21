@@ -49,22 +49,19 @@ class FakeContext:
 
 
 class FakeBot:
-    """替代 aiocqhttp 的 bot，只实现 get_group_list。"""
+    """替代 aiocqhttp 的 bot，只实现 get_group_info。"""
 
-    def __init__(self, groups: list[dict]) -> None:
-        self.groups = groups
-
-    async def call_action(self, action: str):
-        if action == "get_group_list":
-            return self.groups
+    async def call_action(self, action: str, **kwargs):
+        if action == "get_group_info":
+            return {"group_id": kwargs.get("group_id"), "group_name": "测试群"}
         raise RuntimeError(f"未实现 {action}")
 
 
 class FakePlatform:
     """替代 aiocqhttp 适配器，提供 meta 与 bot。"""
 
-    def __init__(self, groups: list[dict]) -> None:
-        self.bot = FakeBot(groups)
+    def __init__(self) -> None:
+        self.bot = FakeBot()
 
     def meta(self):
         return types.SimpleNamespace(id="aiocqhttp", name="aiocqhttp")
@@ -238,9 +235,9 @@ class PluginTestCase(unittest.IsolatedAsyncioTestCase):
 class RouteTest(PluginTestCase):
     """构造时可以注册全部路由。"""
 
-    def test_registers_ten_routes(self):
-        """10 条 Web API 全部登记，路径都带插件名前缀。"""
-        self.assertEqual(len(self.context.routes), 10)
+    def test_registers_nine_routes(self):
+        """9 条 Web API 全部登记，路径都带插件名前缀。"""
+        self.assertEqual(len(self.context.routes), 9)
         for route, _, _, _ in self.context.routes:
             self.assertTrue(route.startswith("/astrbot_plugin_deepseek_status/"))
 
@@ -280,16 +277,16 @@ class SettingsTest(PluginTestCase):
 class SubscriptionApiTest(PluginTestCase):
     """页面新增、编辑、删除订阅。"""
 
-    async def test_create_rejects_bad_session(self):
-        """会话标识不是三段 UMO 时返回 400。"""
-        self.web.request.payload = {"session": "bad"}
+    async def test_create_rejects_bad_group_id(self):
+        """群号不是纯数字时返回 400。"""
+        self.web.request.payload = {"group_id": "abc"}
         result = await self.plugin.page_create_subscription()
         self.assertEqual(result["status_code"], 400)
 
     async def test_create_rejects_duplicate(self):
-        """同一会话重复新增返回 400。"""
+        """同一群号重复新增返回 400。"""
         subscription_store.create(self.plugin.conn, "aiocqhttp:GroupMessage:1", "", True)
-        self.web.request.payload = {"session": "aiocqhttp:GroupMessage:1"}
+        self.web.request.payload = {"group_id": "1"}
         result = await self.plugin.page_create_subscription()
         self.assertEqual(result["status_code"], 400)
 
@@ -305,33 +302,26 @@ class SubscriptionApiTest(PluginTestCase):
         self.assertEqual(result["status_code"], 404)
 
 
-class GroupApiTest(PluginTestCase):
-    """aiocqhttp 群列表与备注填充。"""
+class GroupNameTest(PluginTestCase):
+    """按群号取群名。"""
 
-    async def test_list_groups(self):
-        """拉取群列表后按群号与群名返回。"""
-        self.context.platform = FakePlatform([{"group_id": 123, "group_name": "测试群"}])
-        result = await self.plugin.page_list_groups()
-        self.assertEqual(result["data"]["groups"][0]["group_id"], "123")
-        self.assertEqual(result["data"]["groups"][0]["group_name"], "测试群")
+    async def test_get_group_name(self):
+        """群号合法时返回 aiocqhttp 的群名。"""
+        self.context.platform = FakePlatform()
+        self.web.request.query.params = {"group_id": "123"}
+        result = await self.plugin.page_get_group_name()
+        self.assertEqual(result["data"], {"group_name": "测试群"})
 
-    async def test_fill_notes_updates_group_subscription(self):
-        """已有群订阅的备注改成群名，开关保持不变。"""
-        subscription_store.create(
-            self.plugin.conn, "aiocqhttp:GroupMessage:123", "旧备注", False
-        )
-        self.context.platform = FakePlatform([{"group_id": 123, "group_name": "测试群"}])
-        result = await self.plugin.page_fill_group_notes()
-        self.assertEqual(result["data"]["updated"], 1)
-        stored = subscription_store.get_by_session(
-            self.plugin.conn, "aiocqhttp:GroupMessage:123"
-        )
-        self.assertEqual(stored.note, "测试群")
-        self.assertFalse(stored.enabled)
+    async def test_bad_group_id_returns_400(self):
+        """群号不是纯数字时返回 400。"""
+        self.web.request.query.params = {"group_id": "abc"}
+        result = await self.plugin.page_get_group_name()
+        self.assertEqual(result["status_code"], 400)
 
     async def test_no_platform_returns_400(self):
         """没有 aiocqhttp 平台时返回 400。"""
-        result = await self.plugin.page_list_groups()
+        self.web.request.query.params = {"group_id": "123"}
+        result = await self.plugin.page_get_group_name()
         self.assertEqual(result["status_code"], 400)
 
 
@@ -379,10 +369,20 @@ class CommandTest(PluginTestCase):
         messages = await self.collect("开", "dsstatus 开")
         self.assertEqual(messages, ["已开启，但暂时取不到状态。"])
 
+    async def test_private_chat_is_ignored(self):
+        """私聊发送命令不回复，也不写订阅。"""
+        event = FakeEvent("dsstatus 开", "aiocqhttp:FriendMessage:1")
+        messages = [item async for item in self.plugin.dsstatus(event, "开")]
+        self.assertEqual(messages, [])
+        stored = subscription_store.get_by_session(
+            self.plugin.conn, "aiocqhttp:FriendMessage:1"
+        )
+        self.assertIsNone(stored)
+
     async def test_off_without_subscription(self):
-        """从没订阅过时关闭回“本会话还没有订阅”。"""
+        """从没订阅过时关闭回“本群还没有订阅”。"""
         messages = await self.collect("关", "dsstatus 关")
-        self.assertEqual(messages, ["本会话还没有订阅。"])
+        self.assertEqual(messages, ["本群还没有订阅。"])
 
 
 class ChangesApiTest(PluginTestCase):
