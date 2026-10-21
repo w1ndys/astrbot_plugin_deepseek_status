@@ -1,133 +1,104 @@
 # 需求实施计划
 
-- [ ] 1. 落仓库骨架与插件元数据
-  - [ ] 1.1 建目录与包文件
-    - 建 `entity/`、`data/`、`business/`、`tests/`、`tests/fixtures/`、`dashboard/` 目录，各 Python 包写 `__init__.py`（设计「Architecture」分层）
-    - `__init__.py` 只声明这是插件包，插件类注册留在 `main.py`（需求 11.1、11.3）
-    - 写 `.gitignore`：忽略 `__pycache__/`、`*.db`、`node_modules/`、虚拟环境；不要忽略 `.agents/`、`.ohmyagent/`
-  - [ ] 1.2 写 `metadata.yaml`（需求 11.2）
-    - `name`、`display_name`、`short_desc`、`desc`、`version: 0.1.0`、`author`、`repo`、`astrbot_version: ">=4.13"`、`support_platforms: [aiocqhttp]`
-  - [ ] 1.3 写 `_conf_schema.json` 五个非密钥字段（需求 1.1–1.5；设计「Data Models」字段表）
-    - `enabled`（bool，默认 false）、`poll_interval_seconds`（int，默认 60，30–3600）、`notify_enabled`（bool，默认 true）、`event_retention_days`（int，默认 30，1–365）、`failure_threshold`（int，默认 3，1–10）
-    - 本项目没有密钥字段，不需要 `secret: true`
-  - [ ] 1.4 写 `AGENTS.md` 并拷入 human-coding-contract
-    - 写明本仓默认启用 `human-coding-contract` 的风格约束
-    - 从 ai-kit 拷 `skills/human-coding-contract/` 到本仓 `.agents/skills/` 与 `.ohmyagent/skills/`（astrbot-new-plugin skill 脚手架步骤 4）
-  - [ ] 1.5 写 `tests/` 可跑桩（需求 11.4；astrbot-new-plugin 验收清单）
-    - 一个 `unittest.TestCase`，`python3.12 -m unittest` 能跑通并通过，不 import `astrbot`
+按带教规则：**一个任务 = 一个函数**。轮到某个函数时先单独谈它的判断规则；标注「判断规则待定」的任务在谈定前不写代码。
 
-- [ ] 2. 实体层：固定值与数据形状
-  - [ ] 2.1 `entity/constants.py`（设计「实体层」表）
-    - `PLUGIN_NAME`、`STATUS_PAGE_BASE`、`PAGE_ID`、`FEED_ATOM_URL`、`REQUEST_TIMEOUT_SECONDS`
-    - `COMPONENT_SEVERITY`（operational 0 / degraded 1 / partial_outage 2 / full_outage 3）、`CLOSED_EVENT_STATUSES`
-    - `EVENT_LIST_LOOKBACK_SECONDS`、`EVENT_LIST_LOOKAHEAD_SECONDS`、`BACKOFF_MAX_MULTIPLIER`
-    - 五类 `NOTIFY_*` 常量、`COMMAND_NAME`、`DISPLAY_TIMEZONE`
-  - [ ] 2.2 `entity/models.py` 五个 dataclass（设计「内存结构」）
-    - `Component`、`StatusChange`、`Snapshot`、`Subscription`、`Notification`，字段严格按设计；`entity/` 不 import `astrbot`
-  - [ ] 2.3 实体层单测
-    - 校验严重度表取值与顺序、默认时区对象可用
+- [x] 0. 范围切换后的配置对齐
+  - [x] 0.1 `_conf_schema.json`：五个字段，`event_retention_days` 改为 `history_retention_days`
+  - [x] 0.2 `metadata.yaml`：`short_desc` / `desc` 改为整体状态监控
+  - [x] 0.3 `AGENTS.md`：分层说明去掉组件、feed 与严重度表
+  - [x] 0.4 `_conf_schema.json` / `metadata.yaml`：状态历史文案改为变更记录
 
-- [ ] 3. 数据层：连库、建表与三个 store
-  - [ ] 3.1 `data/db.py`（需求 8.1、8.5；设计「关键约定」第一条）
-    - `get_db_path()` 用 `StarTools.get_data_dir(PLUGIN_NAME)` **显式传插件名**（否则从子模块调用会抛 `RuntimeError`）
-    - `connect(db_path)` 接收显式路径并设 `row_factory`；`init_db(conn)` 建 `subscriptions` / `events` / `push_records` / `component_states` 四张表，含两条 `UNIQUE` 约束
-  - [ ] 3.2 `data/subscription_store.py`（需求 5.2–5.4、6.2–6.5、8.1）
-    - 九个函数：`list_subscriptions`、`get_by_session`、`get_by_id`、`subscribe_session`（已存在则保留原关注组件与开关）、`set_components`、`disable_session`、`create`、`update`、`delete`
-  - [ ] 3.3 `data/event_store.py`（需求 3.5–3.7、4.3、8.2–8.4）
-    - 九个函数：`known_event_statuses`、`record_event`（按 `(change_id, status)` 插入并返回 opened/updated/resolved/none）、`record_component_status`、`record_push`、`list_events`、`list_pushes`、`list_pending_retry`、`mark_retried`、`purge_expired`
-    - `latest_update_key` 与 `change_type` 落库，供页面展示与将来放宽触发条件
-  - [ ] 3.4 `data/component_store.py`（需求 3.6、10.5）
-    - `load_statuses`、`save_status`、`prune_missing`
-  - [ ] 3.5 数据层单测（临时目录 SQLite，不 import `astrbot`）
-    - 订阅增删改、命令订阅重复时不覆盖关注组件、`UNIQUE(change_id, status)` 冲突时不新增行、待重试查询与 `mark_retried`、`purge_expired` 按保留天数删除、组件下架清理
-  - [ ] 3.6 数据层属性测试
-    - P1 幂等：同一 `(change_id, status)` 反复写入，`events` 恒为一行、`push_records` 受 `UNIQUE(session, dedup_key)` 约束（需求 3.5、设计 P1）
-    - P3 时间一致：任意写入路径产出的时间列都匹配 UTC ISO8601 带 `Z`（需求 8.5、设计 P3）
-    - P5 空清单语义：`component_ids` 空数组往返后仍是空数组且不被当成停用（需求 7.2、设计 P5）
+- [x] 1. 实体层（结构任务）
+  - [x] 1.1 `entity/constants.py`：`PLUGIN_NAME`、`STATUS_PAGE_BASE`、`PAGE_ID`、`REQUEST_TIMEOUT_SECONDS`、`CLOSED_EVENT_STATUSES`、`STATUS_NORMAL`、`STATUS_ABNORMAL`、`NOTIFY_ABNORMAL`、`NOTIFY_RECOVERED`、`COMMAND_NAME`、`DEFAULT_TIMEZONE`
+  - [x] 1.2 `entity/models.py`：`StatusEvent`、`Snapshot`、`Subscription`、`Notification`
+  - [x] 1.3 实体层单测：默认时区可用、常量取值符合设计
+  - [x] 1.4 `entity/constants.py`：`STATUS_LABELS`、`EVENT_TYPE_LABELS`、`NOTIFY_CHANGES`；同步 `entity/models.py` 注释
 
-- [ ] 4. 检查点 - 确保所有测试通过，如有疑问请询问用户
+- [x] 2. 数据层
+  - [x] 2.1 `data/db.py::connect`
+  - [x] 2.2 `data/db.py::init_db`：三张表 `subscriptions` / `status_history` / `push_records`
+  - [x] 2.3 `data/db.py::utc_now`
+  - [x] 2.4 `data/db.py::get_db_path`：显式传插件名
+  - [x] 2.5 `data/subscription_store.py::list_subscriptions`
+  - [x] 2.6 `data/subscription_store.py::get_by_session`
+  - [x] 2.7 `data/subscription_store.py::get_by_id`
+  - [x] 2.8 `data/subscription_store.py::enable_session`：已存在且停用时重新启用、保留备注
+  - [x] 2.9 `data/subscription_store.py::disable_session`
+  - [x] 2.10 `data/subscription_store.py::create`：重复会话返回失败原因
+  - [x] 2.11 `data/subscription_store.py::update`
+  - [x] 2.12 `data/subscription_store.py::delete`
+  - [x] 2.13 取消：随 `status_history` 删除 `record_transition`
+  - [x] 2.14 取消：随 `status_history` 删除 `list_history`
+  - [x] 2.15 `data/history_store.py::record_push`：写一条推送结果（成功/失败、原因、原始报错）
+  - [x] 2.16 取消：删除 `list_pending_retry`（不重试）
+  - [x] 2.17 取消：删除 `mark_retried`（不重试）
+  - [x] 2.18 `data/history_store.py::purge_expired`：历史按采集时间、推送按推送完成时间，早于截止点才删
+  - [x] 2.19 数据层测试：临时目录 SQLite，不 import `astrbot`
+  - [x] 2.20 取消：`record_transition` 过滤已结束事件（随 `status_history` 一起删除）
+  - [x] 2.21 `data/db.py`：用 `change_log` 表替换 `status_history`
+  - [x] 2.22 `data/history_store.py::record_change`：每条变化一行
+  - [x] 2.23 `data/history_store.py::list_changes`：按采集时间倒序分页
+  - [x] 2.24 `data/history_store.py::purge_expired`：改删 `change_log` 与推送记录
+  - [x] 2.25 数据层测试更新：变更记录写入、分页与清理
 
-- [ ] 5. 业务层：采集与解析
-  - [ ] 5.1 `business/collector.py`（需求 2.1、2.3、2.4、2.6、10.4）
-    - `CollectorError`（请求失败的统一异常；解析层用 `ValueError`，两类分开记日志）、`fetch_summary_active`、`fetch_change_list`、`fetch_change_info`、`fetch_feed_atom`、`make_timeout`、`api_url`
-    - 用 `aiohttp`，统一 10 秒超时，带 `Accept: application/json`；非 200 或 JSON 解析失败抛 `CollectorError`
-  - [ ] 5.2 `business/parser_api.py`（需求 2.2、2.5、3.7、3.8；设计 P6、P9）
-    - `parse_summary_active`（结构不符抛 `ValueError`，信息含缺失或非法的字段名，触发降级）、`parse_component_statuses`（默认 operational，跳过 `resolved`/`completed`，按组件 ID 匹配取最严重）、`parse_change`、`latest_update_key`（`update_id` 为空时用 `at_seconds` 与状态拼接，缺 `updates` 返回空串）、`derive_overall_status`、`event_link`
-    - 明确不把已结束事件的 `affected_components[].status` 当故障级别
-  - [ ] 5.3 `business/parser_feed.py`（需求 2.5、2.10、7.4）
-    - `parse`（Atom entry → `StatusChange`，`change_id` 从 `urn:flashduty:change:{id}` 取，组件 ID 留空只保留名称）、`parse_affected_names`
-  - [ ] 5.4 解析单测与 fixture
-    - 落盘 `tests/fixtures/summary_active.json`、`change_list.json`、`feed_atom.xml` 实测样本
-    - 覆盖：组件解析、未结束事件解析、`latest_update_key` 两种退化、结构破坏抛 `ValueError` 且信息含字段名、feed 的 `Status:` 与组件名解析
-  - [ ] 5.5 属性测试
-    - P6 状态级联：任取组件状态集合，`overall` 恒等于 `COMPONENT_SEVERITY` 最大值（需求 2.2、设计 P6）
-    - P9 已结束事件不参与：把任意事件状态改成 `resolved` / `completed` 后，组件状态计算结果不变（需求 2.2、设计 P9）
+- [x] 3. 采集与解析
+  - [x] 3.1 `business/collector.py::api_url`
+  - [x] 3.2 `business/collector.py::make_timeout`
+  - [x] 3.3 `business/collector.py::fetch_summary_active`
+  - [x] 3.4 `business/parser_api.py::parse_event`（判断规则：ID 必须是整数，字符串按结构异常）
+  - [x] 3.5 `business/parser_api.py::parse_snapshot`（判断规则：保留全部事件，整体状态按过滤 `resolved` / `completed` 后计算）
+  - [x] 3.6 `business/parser_api.py::event_link`
+  - [x] 3.7 解析测试：真实 `summary_active.json` 正常态；非正常态与已结束事件用构造对象
 
-- [ ] 6. 业务层：判定、过滤与文案
-  - [ ] 6.1 `business/detector.py`（需求 2.9、3.1–3.6、3.7；设计 P1、P10）
-    - `event_dedup_key`、`component_dedup_key`、`source_failure_key`、`backoff_seconds`（`min(interval × 2^failures, interval × 4)`）、`diff_components`
-  - [ ] 6.2 `business/filtering.py`（需求 5.5、7.1–7.4；设计 P5、P8）
-    - `matched_component_ids`（逗号分隔、大小写不敏感、无匹配返回空列表）、`subscription_accepts`（空清单=全部）、`pick_recipients`、`names_to_component_ids`
-  - [ ] 6.3 `business/text.py`（需求 3.8、3.9、4.4–4.6、5.1、5.6；设计 P3）
-    - `to_local`（Unix 秒 → `Asia/Shanghai`）、`render_event`（区分故障与维护）、`render_component`、`render_source_failure`、`render_summary`、`render_status_reply`、`render_help`
-    - 文案写死在代码里，不做成配置项
-  - [ ] 6.4 单测
-    - 去重键生成、opened/updated/resolved/none 判定、退避秒数上限、关键字模糊匹配（含无匹配）、五类文案含链接与时间、维护与故障文案区分
-  - [ ] 6.5 属性测试
-    - P8 过滤正确：随机订阅清单与受影响组件集合下，「收到通知」与「交集非空或清单为空且非全局通知」等价（需求 7.1–7.3、设计 P8）
-    - 退避单调性：`backoff_seconds` 随失败次数不递减且恒 ≤ 轮询间隔 × 4（需求 2.9）
+- [x] 4. 判定与文案
+  - [x] 4.1 取消：无 `detect_transition`（整体翻转不再落库）
+  - [x] 4.2 `business/detector.py::detect_event_changes`（新出现、状态变化；消失不算）
+  - [x] 4.3 `business/detector.py::changes_key`
+  - [x] 4.4 `business/text.py::resolve_timezone`
+  - [x] 4.5 `business/text.py::to_local`：`YYYY-MM-DD HH:MM:SS`，不带偏移后缀
+  - [x] 4.6 `business/text.py::render_changes`：版式 A（每条一行 + 链接缩进），空标题用“未命名事件”
+  - [x] 4.7 `business/text.py::render_summary`：正常一句状态，非正常列出未结束事件
+  - [x] 4.8 `business/text.py::render_status_reply`：复用摘要，空快照提示刚启动
+  - [x] 4.9 `business/text.py::render_help`：使用实际触发的指令名
+  - [x] 4.10 文案与判定测试：`tests/test_detector.py`、`tests/test_text.py`
 
-- [ ] 7. 业务层：轮询编排
-  - [ ] 7.1 `business/monitor.py`（需求 2.5–2.11、4.1–4.3、8.4、8.6、8.7、10.1–10.3）
-    - `start`、`stop`、`run`（按 `backoff_seconds` 延长等待）、`_tick`（采集→解析→落库→推送→重试→清理）、`_collect`（主接口请求失败或接口结构异常即降级 feed，两类日志分开）、`_dispatch`、`retry_failed`、`push_summary`、`snapshot`、`baseline_only`
-    - 轮询顺序按设计：`summary/active` → `change/list`（窗口 = 上次检查 − 600 秒 → 现在 + 120 秒）→ 缺 `updates` 才 `change/info`
-  - [ ] 7.2 编排单测（用假采集函数替换网络层）
-    - 正常一轮、主接口失败降级、两路失败累计与阈值提醒、退避生效、推送失败重试一次、兜底不发组件通知、落库失败不推送、主接口返回 200 但结构缺字段时降级并记「接口结构异常」日志（用 `assertLogs`）
-  - [ ] 7.3 编排属性测试
-    - P4 快照一致：任一轮落库失败时内存快照与组件表都不变（需求 8.6、设计 P4）
-    - P7 降级不误报：feed 模式下的任意一轮都不写组件表、不产生 `component_changed` 通知（需求 2.10、设计 P7）
-    - P10 基线不刷屏：启动后首轮无论收到多少历史事件，`push_records` 都为空（需求 8.7、设计 P10）
-    - P2 重试一次：推送失败的记录最多被重试一次（需求 4.3、设计 P2）
+- [x] 5. 轮询编排
+  - [x] 5.1 `business/monitor.py::Monitor.__init__`：显式依赖 + `MonitorConfig`
+  - [x] 5.2 `business/monitor.py::Monitor.start`：关闭停旧任务；已启动先停再重启
+  - [x] 5.3 `business/monitor.py::Monitor.stop`：取消并等待任务退出
+  - [x] 5.4 `business/monitor.py::Monitor.run`：立即首轮；按开始时间对齐，超时立刻下一轮；配置每轮重读
+  - [x] 5.5 `business/monitor.py::Monitor._tick`：采集 → 差分 → 写变更记录 → 推送 → 清理；采集失败不清理，记录写失败保留已写行
+  - [x] 5.6 `business/monitor.py::Monitor._collect`：请求失败与结构异常分别记日志并返回 None
+  - [x] 5.7 `business/monitor.py::Monitor._dispatch`：逐个发送，相邻两条间隔 1 秒
+  - [x] 5.8 取消：无 `retry_failed`（不重试）
+  - [x] 5.9 `business/monitor.py::Monitor.push_summary`：主动查询一次，失败不影响订阅开启，不更新基线
+  - [x] 5.10 `business/monitor.py::Monitor.snapshot`：返回最近一次成功快照
+  - [x] 5.11 编排测试：假采集函数，覆盖基线、状态变化、同轮汇总、消失不推、变更记录写失败与清理
 
-- [ ] 8. 检查点 - 确保所有测试通过，如有疑问请询问用户
+- [x] 6. 入口层
+  - [x] 6.0 `main.py::Plugin._register_routes`：注册 8 条 Web API
+  - [x] 6.1 `main.py::Plugin.__init__`：建库、转换配置、创建 Monitor、注册路由
+  - [x] 6.2 `main.py::Plugin.initialize`：启动轮询并记一行日志
+  - [x] 6.3 `main.py::Plugin.terminate`：先停轮询再关连接
+  - [x] 6.4 `main.py::Plugin.dsstatus`：状态 / 开 / 关 / 帮助；全局关时只写订阅不推送
+  - [x] 6.5 `main.py::page_get_settings`：返回五个非密钥配置
+  - [x] 6.6 `main.py::page_save_settings`：缺字段沿用当前值，非法整单 400，保存后热重启
+  - [x] 6.7 `main.py::page_get_status`：关闭时隐藏旧快照
+  - [x] 6.8 `main.py::page_list_subscriptions`：返回全部订阅（含停用）
+  - [x] 6.9 `main.py::page_create_subscription`：重复会话 400；启用时补推摘要
+  - [x] 6.10 `main.py::page_update_subscription`：停用改启用时补推摘要
+  - [x] 6.11 `main.py::page_delete_subscription`：不存在返回 404
+  - [x] 6.12 `main.py::page_list_changes`：变更记录分页，默认 20、最多 100
+  - [x] 6.13 入口层测试：注入 astrbot 替身，覆盖命令分支、配置校验与订阅接口
 
-- [ ] 9. 入口层：命令与 Web API
-  - [ ] 9.1 `main.py` 插件类与生命周期（需求 11.3；设计「入口层」）
-    - `Plugin(Star)`：`__init__` 打开数据库、注册全部路由、注册命令、创建 `Monitor`；`initialize()` 启动轮询；`terminate()` 停止轮询并关连接
-    - 入口只做注册与转发，不直接执行 SQL
-  - [ ] 9.2 `dsstatus` 命令（需求 5.1–5.9）
-    - 无参数回状态摘要；`订阅` / `退订` / `帮助`；带组件关键字时按模糊匹配写关注清单，无匹配则列出可选组件
-    - 多人可用，参数解析按 AstrBot 的空白切分规则，帮助文案写明多组件用逗号分隔
-  - [ ] 9.3 配置与状态路由（需求 1.6、1.7、9.1–9.4、9.7）
-    - `GET/PUT /{PLUGIN}/settings`（读 schema 当前值、`save_config()` 写回、非对象请求体或类型不符返回 400）、`GET /{PLUGIN}/status`
-  - [ ] 9.4 订阅管理路由（需求 6.1–6.5、4.2、9.2）
-    - `GET/POST /{PLUGIN}/subscriptions`、`PUT/DELETE /{PLUGIN}/subscriptions/<sub_id>`
-    - 会话标识重复时返回失败原因；由停用改启用后立即调用 `monitor.push_summary(session)`
-  - [ ] 9.5 事件历史路由（需求 9.5）
-    - `GET /{PLUGIN}/events`：分页、按事件时间倒序、附带推送结果
-  - [ ] 9.6 入口层单测
-    - 请求体非对象与非法 `sub_id` 返回 400；页面响应不含密钥字段；命令参数四个分支（无参/订阅/退订/未知）
+- [x] 7. 前端（一个视图，三个 Tab）
+  - [x] 7.1 `dashboard/` 工程骨架与构建配置：pnpm + React 19 + antd 6 + Vite 8，单份 IIFE 输出到 `views/status/`
+  - [x] 7.2 概览与全局配置视图：状态卡 + 五字段表单，打开/刷新/保存后请求
+  - [x] 7.3 订阅管理视图：列表、即时开关、新增/编辑/删除
+  - [x] 7.4 变更记录视图：服务端分页，打开/刷新请求
+  - [x] 7.5 构建产物与页面检查：三个 Tab 预览通过，产物随仓库提交
 
-- [ ] 10. 前端：dashboard 工程与三个视图
-  - [ ] 10.1 dashboard 工程骨架（设计「前端」表；照抄 `astrbot_plugin_fzxy` 的构建配置）
-    - `package.json`（antd ^6.6.5、react ^19.3.0、@ant-design/cssinjs ^2.1.2、vite ^8.3.3、typescript ^6.0.3）、`tsconfig.json`、`vite.config.ts`（`base: "./"`、`outDir: "../views/status"`、`cssCodeSplit: false`、iife、`assets/index.js`、改写 `type="module"` 的插件）
-    - `index.html`（`#root` + 宿主主题内联脚本）、`src/main.tsx`（`StyleProvider layer`）、`src/App.tsx`（`ConfigProvider` + 三 Tab，只改 React state）、`src/bridge.ts`、`src/style.css`
-  - [ ] 10.2 概览与全局配置视图（需求 9.1–9.4、9.7、4.2）
-    - 顶部显示整体状态、各组件状态、快照采集时间（本地时区并标注偏移）
-    - 手写五个非密钥字段表单，打开时读 schema 当前值，保存走 `PUT settings`
-  - [ ] 10.3 订阅管理视图（需求 6.1–6.5、4.2）
-    - 列表 + 新增/编辑/删除；关注组件多选（选项来自 `GET status` 返回的组件目录）；会话标识可手填；重复时显示后端返回的失败原因
-  - [ ] 10.4 事件历史视图（需求 9.5）
-    - 分页表格按事件时间倒序，含类型、状态、受影响组件、最近进展标识、链接；可展开查看推送结果
-  - [ ] 10.5 构建并提交产物（需求 11.6）
-    - `cd dashboard && npm run build`，产出 `views/status/index.html` + `views/status/assets/index.js` + `views/status/assets/style.css`
-  - [ ] 10.6 前端构建与产物检查
-    - `tsc --noEmit` 通过；产物 HTML 只有 `script defer` 与 `style.css` 两条引用，无 `type="module"`、无 `crossorigin`、无第二份 JS chunk，`index.js` 内无不带空格的外部 `from"./x.js"`
-
-- [ ] 11. 检查点 - 确保所有测试通过，如有疑问请询问用户
-
-- [ ] 12. 收尾与登记
-  - [ ] 12.1 写 `README.md`（安装方式、五个配置项、`dsstatus` 用法、三个页面说明、数据目录位置）
-  - [ ] 12.2 真实网络冒烟用例（默认 `skip`，设 `DEEPSEEK_STATUS_LIVE=1` 才跑；设计「Test Strategy」）
-    - 直连 `summary/active`、`change/list`、`feed.atom`，断言字段形状，证明解析对当前线上结构成立
-  - [ ] 12.3 在 `w1ndys/dev-cycle` 的 `projects/astrbot_plugin_deepseek_status/README.md` 登记本周期，并更新根 `README.md` 索引
+- [ ] 8. 收尾
+  - [x] 8.1 写 `README.md`：安装、五个配置项、命令、三个 Tab、数据目录、开发与限制
+  - [x] 8.2 真实网络冒烟：`tests/test_live.py`，默认 skip，`DEEPSEEK_STATUS_LIVE=1` 已实跑通过
+  - [x] 8.3 在 `w1ndys/dev-memory` 的项目 README 里更新本周期
