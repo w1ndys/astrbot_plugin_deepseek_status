@@ -180,7 +180,7 @@ graph TD
 - `async def _tick(self) -> None`：采集 → 事件差分 → 写变更记录 → 推送 → 清理。
 - `async def _collect(self) -> Snapshot | None`：调采集与解析；`CollectorError` / `ValueError` 分别记「请求失败」/「接口结构异常」，返回 `None`。
 - `async def _dispatch(self, notification: Notification) -> None`：给每个启用订阅推送这一条通知，相邻两条间隔 1 秒；单条失败记日志后继续，不重试。
-- `async def push_summary(self, session: str) -> bool`：订阅建立或启用后立即推当前摘要。
+- `async def push_summary(self, session: str) -> bool`：订阅建立或启用后主动查一次，推“DeepSeek 状态监控已开启…”前缀 + 当前状态；群聊用“本群”，私聊用“本会话”。
 - `def snapshot(self) -> Snapshot | None`：供命令与页面读取。
 
 ### 入口层 `main.py`
@@ -199,6 +199,8 @@ graph TD
 | POST | `/{PLUGIN}/subscriptions/<sub_id>/update` | `page_update_subscription` | 编辑订阅 |
 | POST | `/{PLUGIN}/subscriptions/<sub_id>/delete` | `page_delete_subscription` | 删除订阅 |
 | GET | `/{PLUGIN}/history` | `page_list_changes` | 变更记录分页 |
+| GET | `/{PLUGIN}/groups` | `page_list_groups` | 拉取 aiocqhttp 群列表 |
+| POST | `/{PLUGIN}/groups/fill-notes` | `page_fill_group_notes` | 按群名批量填充群订阅备注 |
 
 > 页面 bridge 只提供 `apiGet` / `apiPost`，所以写操作统一用 POST；不能注册 PUT / DELETE 后指望自定义页面调用。
 

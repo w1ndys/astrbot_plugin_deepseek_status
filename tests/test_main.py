@@ -7,7 +7,7 @@ import types
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from astrbot_plugin_deepseek_status.data import history_store, subscription_store
 from astrbot_plugin_deepseek_status.entity.models import StatusEvent
@@ -35,13 +35,39 @@ class FakeEvent:
 
 
 class FakeContext:
-    """替代 Context，记录注册的路由。"""
+    """替代 Context，记录注册的路由，并可挂一个假 aiocqhttp 平台。"""
 
     def __init__(self) -> None:
         self.routes: list[tuple[str, object, list[str], str]] = []
+        self.platform = None
 
     def register_web_api(self, route, handler, methods, desc) -> None:
         self.routes.append((route, handler, methods, desc))
+
+    def get_platform(self, name: str):
+        return self.platform if name == "aiocqhttp" else None
+
+
+class FakeBot:
+    """替代 aiocqhttp 的 bot，只实现 get_group_list。"""
+
+    def __init__(self, groups: list[dict]) -> None:
+        self.groups = groups
+
+    async def call_action(self, action: str):
+        if action == "get_group_list":
+            return self.groups
+        raise RuntimeError(f"未实现 {action}")
+
+
+class FakePlatform:
+    """替代 aiocqhttp 适配器，提供 meta 与 bot。"""
+
+    def __init__(self, groups: list[dict]) -> None:
+        self.bot = FakeBot(groups)
+
+    def meta(self):
+        return types.SimpleNamespace(id="aiocqhttp", name="aiocqhttp")
 
 
 class FakeStar:
@@ -212,9 +238,9 @@ class PluginTestCase(unittest.IsolatedAsyncioTestCase):
 class RouteTest(PluginTestCase):
     """构造时可以注册全部路由。"""
 
-    def test_registers_eight_routes(self):
-        """8 条 Web API 全部登记，路径都带插件名前缀。"""
-        self.assertEqual(len(self.context.routes), 8)
+    def test_registers_ten_routes(self):
+        """10 条 Web API 全部登记，路径都带插件名前缀。"""
+        self.assertEqual(len(self.context.routes), 10)
         for route, _, _, _ in self.context.routes:
             self.assertTrue(route.startswith("/astrbot_plugin_deepseek_status/"))
 
@@ -279,6 +305,36 @@ class SubscriptionApiTest(PluginTestCase):
         self.assertEqual(result["status_code"], 404)
 
 
+class GroupApiTest(PluginTestCase):
+    """aiocqhttp 群列表与备注填充。"""
+
+    async def test_list_groups(self):
+        """拉取群列表后按群号与群名返回。"""
+        self.context.platform = FakePlatform([{"group_id": 123, "group_name": "测试群"}])
+        result = await self.plugin.page_list_groups()
+        self.assertEqual(result["data"]["groups"][0]["group_id"], "123")
+        self.assertEqual(result["data"]["groups"][0]["group_name"], "测试群")
+
+    async def test_fill_notes_updates_group_subscription(self):
+        """已有群订阅的备注改成群名，开关保持不变。"""
+        subscription_store.create(
+            self.plugin.conn, "aiocqhttp:GroupMessage:123", "旧备注", False
+        )
+        self.context.platform = FakePlatform([{"group_id": 123, "group_name": "测试群"}])
+        result = await self.plugin.page_fill_group_notes()
+        self.assertEqual(result["data"]["updated"], 1)
+        stored = subscription_store.get_by_session(
+            self.plugin.conn, "aiocqhttp:GroupMessage:123"
+        )
+        self.assertEqual(stored.note, "测试群")
+        self.assertFalse(stored.enabled)
+
+    async def test_no_platform_returns_400(self):
+        """没有 aiocqhttp 平台时返回 400。"""
+        result = await self.plugin.page_list_groups()
+        self.assertEqual(result["status_code"], 400)
+
+
 class CommandTest(PluginTestCase):
     """dsstatus 命令分支。"""
 
@@ -308,6 +364,20 @@ class CommandTest(PluginTestCase):
             self.plugin.conn, "aiocqhttp:GroupMessage:1"
         )
         self.assertIsNotNone(stored)
+
+    async def test_on_success_has_no_extra_reply(self):
+        """开启成功时确认消息就是回复，命令不再多发一条。"""
+        self.set_enabled(True)
+        self.plugin.monitor.push_summary = AsyncMock(return_value=True)
+        messages = await self.collect("开", "dsstatus 开")
+        self.assertEqual(messages, [])
+
+    async def test_on_query_failure_replies(self):
+        """主动查询失败时回“已开启，但暂时取不到状态”。"""
+        self.set_enabled(True)
+        self.plugin.monitor.push_summary = AsyncMock(return_value=False)
+        messages = await self.collect("开", "dsstatus 开")
+        self.assertEqual(messages, ["已开启，但暂时取不到状态。"])
 
     async def test_off_without_subscription(self):
         """从没订阅过时关闭回“本会话还没有订阅”。"""

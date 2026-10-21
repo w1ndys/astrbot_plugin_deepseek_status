@@ -87,9 +87,9 @@ class Plugin(Star):
                 return
             # 全局都开着才主动查一次并推当前状态
             if await self.monitor.push_summary(session):
-                yield event.plain_result("已开启本会话通知。")
-            else:
-                yield event.plain_result("已开启，但暂时取不到状态。")
+                # 确认消息本身已包含状态，不再额外回一条
+                return
+            yield event.plain_result("已开启，但暂时取不到状态。")
             return
         if sub == SUBCOMMAND_OFF:
             # 关成功与从没订阅过给不同提示，避免用户以为操作生效
@@ -310,6 +310,53 @@ class Plugin(Star):
             {"changes": rows, "total": total, "page": page, "size": size}
         )
 
+    async def _fetch_groups(self):
+        """通过 aiocqhttp 适配器拉群列表；失败抛异常由调用方转 400。"""
+        platform = self.context.get_platform("aiocqhttp")
+        if platform is None:
+            raise RuntimeError("未找到 aiocqhttp 平台")
+        raw = await platform.bot.call_action("get_group_list")
+        groups = []
+        for item in raw:
+            groups.append(
+                {
+                    "group_id": str(item.get("group_id", "")),
+                    "group_name": str(item.get("group_name", "")),
+                }
+            )
+        return groups
+
+    async def page_list_groups(self):
+        """返回 aiocqhttp 的群号与群名，供页面选择。"""
+        try:
+            groups = await self._fetch_groups()
+        except Exception as exc:
+            return error_response(f"拉取群列表失败：{exc}")
+        return json_response({"groups": groups})
+
+    async def page_fill_group_notes(self):
+        """把已有群订阅的备注批量改成群名，返回更新条数。"""
+        try:
+            groups = await self._fetch_groups()
+            platform = self.context.get_platform("aiocqhttp")
+        except Exception as exc:
+            return error_response(f"拉取群列表失败：{exc}")
+        names = {group["group_id"]: group["group_name"] for group in groups}
+        platform_ids = {"aiocqhttp"}
+        if platform is not None:
+            platform_ids.add(platform.meta().id)
+        updated = 0
+        for subscription in list_subscriptions(self.conn):
+            parts = subscription.session.split(":", 2)
+            # 只处理 aiocqhttp 群会话，私聊与其他平台不动
+            if len(parts) != 3 or parts[0] not in platform_ids or parts[1] != "GroupMessage":
+                continue
+            name = names.get(parts[2])
+            if name and subscription.note != name:
+                update(self.conn, subscription.id, name, subscription.enabled)
+                updated += 1
+        return json_response({"updated": updated})
+
     def _register_routes(self) -> None:
         """注册三个 Tab 用到的全部 Web API；路径参数用 <sub_id>。"""
         routes = [
@@ -331,6 +378,13 @@ class Plugin(Star):
                 "删除订阅",
             ),
             ("history", self.page_list_changes, ["GET"], "列出变更记录"),
+            ("groups", self.page_list_groups, ["GET"], "拉取 aiocqhttp 群列表"),
+            (
+                "groups/fill-notes",
+                self.page_fill_group_notes,
+                ["POST"],
+                "按群名填充订阅备注",
+            ),
         ]
         for suffix, handler, methods, desc in routes:
             self.context.register_web_api(

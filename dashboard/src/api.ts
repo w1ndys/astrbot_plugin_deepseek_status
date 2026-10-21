@@ -59,6 +59,15 @@ export type ChangesResponse = {
   size: number;
 };
 
+export type Group = {
+  group_id: string;
+  group_name: string;
+};
+
+export type GroupsResponse = {
+  groups: Group[];
+};
+
 export const STATUS_LABELS: Record<string, string> = {
   investigating: "调查中",
   identified: "已定位",
