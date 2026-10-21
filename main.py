@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
-from astrbot.core.platform.message_session import MessageSession
 
 from .business.monitor import Monitor
 from .business.text import render_help, render_status_reply, resolve_timezone
@@ -76,6 +75,9 @@ class Plugin(Star):
         # 指令名可能被 AstrBot 指令管理改过，帮助用实际触发的首个 token
         command_name = event.message_str.strip().split(maxsplit=1)[0] or COMMAND_NAME
         session = event.unified_msg_origin
+        # 产品只支持群聊；私聊直接忽略，不做任何提示
+        if ":GroupMessage:" not in session:
+            return
         if sub == SUBCOMMAND_HELP:
             yield event.plain_result(render_help(command_name))
             return
@@ -94,9 +96,9 @@ class Plugin(Star):
         if sub == SUBCOMMAND_OFF:
             # 关成功与从没订阅过给不同提示，避免用户以为操作生效
             if disable_session(self.conn, session):
-                yield event.plain_result("已关闭本会话通知。")
+                yield event.plain_result("已关闭本群通知。")
             else:
-                yield event.plain_result("本会话还没有订阅。")
+                yield event.plain_result("本群还没有订阅。")
             return
         # 不带子命令就是查状态；监控总开关关掉时明确提示
         if not sub:
@@ -199,14 +201,18 @@ class Plugin(Star):
         )
 
     async def page_list_subscriptions(self):
-        """返回全部订阅（含停用），按创建顺序给页面改开关。"""
+        """返回全部群订阅（含停用），按创建顺序给页面改开关。"""
         subscriptions = list_subscriptions(self.conn)
         items = []
         for subscription in subscriptions:
+            parts = subscription.session.split(":", 2)
+            # 产品只支持群聊；历史私聊记录不展示
+            if len(parts) != 3 or parts[1] != "GroupMessage":
+                continue
             items.append(
                 {
                     "id": subscription.id,
-                    "session": subscription.session,
+                    "group_id": parts[2],
                     "note": subscription.note,
                     "enabled": subscription.enabled,
                     "created_at": subscription.created_at,
@@ -216,39 +222,33 @@ class Plugin(Star):
         return json_response({"subscriptions": items})
 
     async def page_create_subscription(self):
-        """页面新增订阅；会话标识重复时返回 400。"""
+        """页面新增群订阅；群号重复时返回 400。"""
         payload = await request.json(default={})
         # 请求体必须是对象，数组或字符串没法按字段校验
         if not isinstance(payload, dict):
             return error_response("请求体必须是 JSON 对象")
-        session = payload.get("session", "")
+        group_id = payload.get("group_id", "")
         note = payload.get("note", "")
         enabled = payload.get("enabled", True)
-        if not isinstance(session, str) or not session.strip():
-            return error_response("session 必须是非空字符串")
-        parts = session.strip().split(":", 2)
-        # UMO 必须三段都非空，类型还要是 AstrBot 认识的 MessageType
-        if len(parts) != 3 or not all(parts):
-            return error_response("session 必须是 平台:消息类型:会话ID 格式")
-        try:
-            MessageSession.from_str(session.strip())
-        except (ValueError, TypeError):
-            return error_response("session 的消息类型不合法")
+        # 产品只支持群聊，页面只填群号；完整 UMO 由后端拼
+        if not isinstance(group_id, str) or not group_id.strip().isdigit():
+            return error_response("group_id 必须是纯数字群号")
         if not isinstance(note, str):
             return error_response("note 必须是字符串")
         if not isinstance(enabled, bool):
             return error_response("enabled 必须是布尔值")
-        ok, reason = create(self.conn, session.strip(), note, enabled)
+        session = f"aiocqhttp:GroupMessage:{group_id.strip()}"
+        ok, reason = create(self.conn, session, note, enabled)
         if not ok:
             return error_response(reason or "新增订阅失败")
         pushed = False
         # 新增的是启用订阅且全局两个开关都开时，主动推一次当前状态
         if enabled and self.monitor.config.enabled and self.monitor.config.notify_enabled:
-            pushed = await self.monitor.push_summary(session.strip())
+            pushed = await self.monitor.push_summary(session)
         return json_response({"created": True, "summary_pushed": pushed})
 
     async def page_update_subscription(self, sub_id: str):
-        """页面编辑备注与开关；停用改启用时补推一次摘要。"""
+        """页面编辑群号、备注与开关；群号变化或停用改启用时补推摘要。"""
         try:
             target_id = int(sub_id)
         except ValueError:
@@ -262,23 +262,29 @@ class Plugin(Star):
         # 记录被别处删掉时明确 404，页面应刷新列表
         if current is None:
             return error_response("订阅不存在", status_code=404)
+        current_parts = current.session.split(":", 2)
+        default_group = current_parts[2] if len(current_parts) == 3 else ""
+        group_id = payload.get("group_id", default_group)
         note = payload.get("note", current.note)
         enabled = payload.get("enabled", current.enabled)
+        if not isinstance(group_id, str) or not group_id.strip().isdigit():
+            return error_response("group_id 必须是纯数字群号")
         if not isinstance(note, str):
             return error_response("note 必须是字符串")
         if not isinstance(enabled, bool):
             return error_response("enabled 必须是布尔值")
-        if not update(self.conn, target_id, note, enabled):
+        session = f"aiocqhttp:GroupMessage:{group_id.strip()}"
+        if not update(self.conn, target_id, session, note, enabled):
             return error_response("订阅不存在", status_code=404)
         pushed = False
-        # 只在“停用 → 启用”且全局两个开关都开时补推摘要
+        # 群号变化或“停用 → 启用”时，给新目标补推一次确认摘要
         if (
             enabled
-            and not current.enabled
+            and (not current.enabled or current.session != session)
             and self.monitor.config.enabled
             and self.monitor.config.notify_enabled
         ):
-            pushed = await self.monitor.push_summary(current.session)
+            pushed = await self.monitor.push_summary(session)
         return json_response({"updated": True, "summary_pushed": pushed})
 
     async def page_delete_subscription(self, sub_id: str):
@@ -310,52 +316,24 @@ class Plugin(Star):
             {"changes": rows, "total": total, "page": page, "size": size}
         )
 
-    async def _fetch_groups(self):
-        """通过 aiocqhttp 适配器拉群列表；失败抛异常由调用方转 400。"""
+    async def page_get_group_name(self):
+        """按群号取群名，供页面填入备注。"""
+        group_id = request.query.get("group_id", "")
+        if not isinstance(group_id, str) or not group_id.strip().isdigit():
+            return error_response("group_id 必须是纯数字群号")
         platform = self.context.get_platform("aiocqhttp")
         if platform is None:
-            raise RuntimeError("未找到 aiocqhttp 平台")
-        raw = await platform.bot.call_action("get_group_list")
-        groups = []
-        for item in raw:
-            groups.append(
-                {
-                    "group_id": str(item.get("group_id", "")),
-                    "group_name": str(item.get("group_name", "")),
-                }
+            return error_response("未找到 aiocqhttp 平台")
+        try:
+            info = await platform.bot.call_action(
+                "get_group_info", group_id=int(group_id.strip())
             )
-        return groups
-
-    async def page_list_groups(self):
-        """返回 aiocqhttp 的群号与群名，供页面选择。"""
-        try:
-            groups = await self._fetch_groups()
         except Exception as exc:
-            return error_response(f"拉取群列表失败：{exc}")
-        return json_response({"groups": groups})
-
-    async def page_fill_group_notes(self):
-        """把已有群订阅的备注批量改成群名，返回更新条数。"""
-        try:
-            groups = await self._fetch_groups()
-            platform = self.context.get_platform("aiocqhttp")
-        except Exception as exc:
-            return error_response(f"拉取群列表失败：{exc}")
-        names = {group["group_id"]: group["group_name"] for group in groups}
-        platform_ids = {"aiocqhttp"}
-        if platform is not None:
-            platform_ids.add(platform.meta().id)
-        updated = 0
-        for subscription in list_subscriptions(self.conn):
-            parts = subscription.session.split(":", 2)
-            # 只处理 aiocqhttp 群会话，私聊与其他平台不动
-            if len(parts) != 3 or parts[0] not in platform_ids or parts[1] != "GroupMessage":
-                continue
-            name = names.get(parts[2])
-            if name and subscription.note != name:
-                update(self.conn, subscription.id, name, subscription.enabled)
-                updated += 1
-        return json_response({"updated": updated})
+            return error_response(f"拉取群名失败：{exc}")
+        name = info.get("group_name") if isinstance(info, dict) else ""
+        if not name:
+            return error_response("没有取到群名")
+        return json_response({"group_name": str(name)})
 
     def _register_routes(self) -> None:
         """注册三个 Tab 用到的全部 Web API；路径参数用 <sub_id>。"""
@@ -378,13 +356,7 @@ class Plugin(Star):
                 "删除订阅",
             ),
             ("history", self.page_list_changes, ["GET"], "列出变更记录"),
-            ("groups", self.page_list_groups, ["GET"], "拉取 aiocqhttp 群列表"),
-            (
-                "groups/fill-notes",
-                self.page_fill_group_notes,
-                ["POST"],
-                "按群名填充订阅备注",
-            ),
+            ("group-name", self.page_get_group_name, ["GET"], "按群号取群名"),
         ]
         for suffix, handler, methods, desc in routes:
             self.context.register_web_api(

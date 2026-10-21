@@ -121,11 +121,14 @@ def create(conn: sqlite3.Connection, session: str, note: str, enabled: bool) -> 
     return True, ""
 
 
-def update(conn: sqlite3.Connection, sub_id: int, note: str, enabled: bool) -> bool:
+def update(
+    conn: sqlite3.Connection, sub_id: int, session: str, note: str, enabled: bool
+) -> bool:
     """页面编辑订阅；主键不存在时返回 False。"""
     cursor = conn.execute(
-        "UPDATE subscriptions SET note = ?, enabled = ?, updated_at = ? WHERE id = ?",
-        (note, 1 if enabled else 0, utc_now(), sub_id),
+        "UPDATE subscriptions SET session = ?, note = ?, enabled = ?, updated_at = ?"
+        " WHERE id = ?",
+        (session, note, 1 if enabled else 0, utc_now(), sub_id),
     )
     conn.commit()
     # rowcount 为 0 说明记录已被别处删掉，页面应刷新列表

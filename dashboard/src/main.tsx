@@ -1,15 +1,11 @@
 // 插件视图入口：单页挂载三个 Tab；bridge SDK 由 AstrBot Dashboard 提供。
-// 按宿主 query 的 theme/isDark 先铺底色，避免 iframe 加载时白闪。
+// 主题由 SDK 的 data-theme 与 App 里的 onContext 处理。
 import { StyleProvider } from "@ant-design/cssinjs";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
 import "./style.css";
-
-const params = new URLSearchParams(window.location.search);
-const dark = params.get("isDark") === "1" || params.get("theme") === "dark";
-document.documentElement.dataset.theme = dark ? "dark" : "light";
 
 const container = document.getElementById("root");
 if (!container) {

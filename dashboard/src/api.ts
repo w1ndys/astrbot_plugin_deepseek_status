@@ -32,7 +32,7 @@ export type SettingsResponse = {
 
 export type Subscription = {
   id: number;
-  session: string;
+  group_id: string;
   note: string;
   enabled: boolean;
   created_at: string;
@@ -59,13 +59,8 @@ export type ChangesResponse = {
   size: number;
 };
 
-export type Group = {
-  group_id: string;
+export type GroupNameResponse = {
   group_name: string;
-};
-
-export type GroupsResponse = {
-  groups: Group[];
 };
 
 export const STATUS_LABELS: Record<string, string> = {

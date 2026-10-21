@@ -1,11 +1,17 @@
 // 封装 AstrBot 插件页面 bridge；只暴露页面用得到的 GET/POST。
 // 后端写操作全部注册为 POST，因为 bridge 没有 apiPut / apiDelete。
 // 开发模式下没有 bridge，用内存假数据，方便 pnpm dev 预览。
-import type { ChangeRecord, Group, Settings, StatusResponse, Subscription } from "./api";
+import type { ChangeRecord, Settings, StatusResponse, Subscription } from "./api";
+
+type PluginContext = {
+  isDark?: boolean;
+};
 
 type PluginBridge = {
   apiGet(endpoint: string, params?: Record<string, unknown>): Promise<unknown>;
   apiPost(endpoint: string, body?: unknown): Promise<unknown>;
+  getContext?(): PluginContext | null;
+  onContext?(handler: (context: PluginContext) => void): () => void;
 };
 
 declare global {
@@ -73,16 +79,12 @@ function createDevBridge(): PluginBridge {
   const subscriptions: Subscription[] = [
     {
       id: 1,
-      session: "aiocqhttp:GroupMessage:123456",
+      group_id: "123456",
       note: "旧备注",
       enabled: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
-  ];
-  const groups: Group[] = [
-    { group_id: "123456", group_name: "开发预览群" },
-    { group_id: "654321", group_name: "另一个群" },
   ];
   const changes: ChangeRecord[] = [
     {
@@ -122,8 +124,9 @@ function createDevBridge(): PluginBridge {
       if (endpoint === "subscriptions") {
         return { subscriptions };
       }
-      if (endpoint === "groups") {
-        return { groups };
+      if (endpoint === "group-name") {
+        const groupId = String(params?.group_id ?? "");
+        return { group_name: groupId === "123456" ? "开发预览群" : `群 ${groupId}` };
       }
       if (endpoint === "history") {
         const page = Number(params?.page ?? 1);
@@ -145,32 +148,15 @@ function createDevBridge(): PluginBridge {
         status.enabled = settings.enabled;
         return { saved: true, settings };
       }
-      if (endpoint === "groups/fill-notes") {
-        const names = new Map(groups.map((group) => [group.group_id, group.group_name]));
-        let updated = 0;
-        for (const item of subscriptions) {
-          const parts = item.session.split(":");
-          if (parts.length !== 3 || parts[1] !== "GroupMessage") {
-            continue;
-          }
-          const name = names.get(parts[2]);
-          if (name && item.note !== name) {
-            item.note = name;
-            item.updated_at = new Date().toISOString();
-            updated += 1;
-          }
-        }
-        return { updated };
-      }
       if (endpoint === "subscriptions") {
-        const session = String(payload.session ?? "");
-        if (subscriptions.some((item) => item.session === session)) {
-          throw new Error("会话标识已存在");
+        const groupId = String(payload.group_id ?? "");
+        if (subscriptions.some((item) => item.group_id === groupId)) {
+          throw new Error("该群号已存在");
         }
         const now = new Date().toISOString();
         subscriptions.push({
           id: nextId++,
-          session,
+          group_id: groupId,
           note: String(payload.note ?? ""),
           enabled: Boolean(payload.enabled ?? true),
           created_at: now,
@@ -184,6 +170,7 @@ function createDevBridge(): PluginBridge {
         if (!target) {
           throw new Error("订阅不存在");
         }
+        target.group_id = String(payload.group_id ?? target.group_id);
         target.note = String(payload.note ?? target.note);
         target.enabled = Boolean(payload.enabled ?? target.enabled);
         target.updated_at = new Date().toISOString();

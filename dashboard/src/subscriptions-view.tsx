@@ -1,4 +1,4 @@
-// 订阅管理：列表 + 新增/编辑弹窗；启用开关点一下立即保存。
+// 订阅管理：只支持 aiocqhttp 群聊；填群号后可拉取群名填入备注。
 import {
   Button,
   Card,
@@ -6,7 +6,6 @@ import {
   Input,
   Modal,
   Popconfirm,
-  Select,
   Space,
   Switch,
   Table,
@@ -17,11 +16,11 @@ import type { TableProps } from "antd";
 import { useEffect, useState } from "react";
 
 import { formatTime } from "./api";
-import type { GroupsResponse, Subscription, SubscriptionsResponse } from "./api";
+import type { GroupNameResponse, Subscription, SubscriptionsResponse } from "./api";
 import { apiGet, apiPost } from "./bridge";
 
 type FormValues = {
-  session: string;
+  group_id: string;
   note: string;
   enabled: boolean;
 };
@@ -38,9 +37,7 @@ export default function SubscriptionsView() {
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
-  const [groups, setGroups] = useState<GroupsResponse["groups"]>([]);
-  const [groupLoading, setGroupLoading] = useState(false);
-  const [filling, setFilling] = useState(false);
+  const [nameLoading, setNameLoading] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -60,20 +57,37 @@ export default function SubscriptionsView() {
 
   function openCreate() {
     setEditing(null);
-    setGroups([]);
     form.resetFields();
-    form.setFieldsValue({ session: "", note: "", enabled: true });
+    form.setFieldsValue({ group_id: "", note: "", enabled: true });
     setModalOpen(true);
   }
 
   function openEdit(record: Subscription) {
     setEditing(record);
     form.setFieldsValue({
-      session: record.session,
+      group_id: record.group_id,
       note: record.note,
       enabled: record.enabled,
     });
     setModalOpen(true);
+  }
+
+  async function fetchGroupName() {
+    const groupId = String(form.getFieldValue("group_id") ?? "").trim();
+    if (!groupId) {
+      message.warning("先填群号");
+      return;
+    }
+    setNameLoading(true);
+    try {
+      const data = await apiGet<GroupNameResponse>("group-name", { group_id: groupId });
+      form.setFieldsValue({ note: data.group_name });
+      message.success("已填入群名");
+    } catch (error) {
+      message.error(errorText(error));
+    } finally {
+      setNameLoading(false);
+    }
   }
 
   async function submit() {
@@ -81,10 +95,7 @@ export default function SubscriptionsView() {
     setSaving(true);
     try {
       if (editing) {
-        await apiPost(`subscriptions/${editing.id}/update`, {
-          note: values.note,
-          enabled: values.enabled,
-        });
+        await apiPost(`subscriptions/${editing.id}/update`, values);
         message.success("订阅已保存");
       } else {
         await apiPost("subscriptions", values);
@@ -103,6 +114,7 @@ export default function SubscriptionsView() {
     setTogglingId(record.id);
     try {
       await apiPost(`subscriptions/${record.id}/update`, {
+        group_id: record.group_id,
         note: record.note,
         enabled: checked,
       });
@@ -126,40 +138,11 @@ export default function SubscriptionsView() {
     }
   }
 
-  async function fillNotes() {
-    setFilling(true);
-    try {
-      const data = await apiPost<{ updated: number }>("groups/fill-notes");
-      message.success(`已更新 ${data.updated} 条群备注`);
-      await load();
-    } catch (error) {
-      message.error(errorText(error));
-    } finally {
-      setFilling(false);
-    }
-  }
-
-  async function loadGroups() {
-    setGroupLoading(true);
-    try {
-      const data = await apiGet<GroupsResponse>("groups");
-      setGroups(data.groups);
-      // 没有群时给明确提示，避免用户以为按钮坏了
-      if (data.groups.length === 0) {
-        message.info("aiocqhttp 没有返回任何群");
-      }
-    } catch (error) {
-      message.error(errorText(error));
-    } finally {
-      setGroupLoading(false);
-    }
-  }
-
   const columns: TableProps<Subscription>["columns"] = [
     { title: "ID", dataIndex: "id", width: 64 },
     {
-      title: "会话",
-      dataIndex: "session",
+      title: "群号",
+      dataIndex: "group_id",
       render: (value: string) => (
         <Typography.Text code copyable>
           {value}
@@ -208,14 +191,9 @@ export default function SubscriptionsView() {
       <Card
         title="订阅管理"
         extra={
-          <Space>
-            <Button onClick={() => void fillNotes()} loading={filling}>
-              拉取群备注
-            </Button>
-            <Button type="primary" onClick={openCreate}>
-              新增订阅
-            </Button>
-          </Space>
+          <Button type="primary" onClick={openCreate}>
+            新增订阅
+          </Button>
         }
       >
         <Table
@@ -234,45 +212,30 @@ export default function SubscriptionsView() {
         confirmLoading={saving}
         onCancel={() => setModalOpen(false)}
       >
-        {!editing && (
-          <Space style={{ marginBottom: 16 }} wrap>
-            <Button onClick={() => void loadGroups()} loading={groupLoading}>
-              从群列表选择
-            </Button>
-            {groups.length > 0 && (
-              <Select
-                showSearch
-                optionFilterProp="label"
-                placeholder="选择群自动填充"
-                style={{ minWidth: 260 }}
-                options={groups.map((group) => ({
-                  value: group.group_id,
-                  label: `${group.group_name}（${group.group_id}）`,
-                }))}
-                onChange={(value: string) => {
-                  const group = groups.find((item) => item.group_id === value);
-                  if (group) {
-                    form.setFieldsValue({
-                      session: `aiocqhttp:GroupMessage:${group.group_id}`,
-                      note: group.group_name,
-                    });
-                  }
-                }}
-              />
-            )}
-          </Space>
-        )}
         <Form form={form} layout="vertical">
           <Form.Item
-            name="session"
-            label="会话标识"
-            rules={[{ required: true, message: "填会话标识" }]}
-            extra="平台:消息类型:会话ID，例如 aiocqhttp:GroupMessage:123"
+            label="群号"
+            required
+            extra="只填群号；完整会话标识由后端拼接，私聊不支持。"
           >
-            <Input disabled={Boolean(editing)} />
+            <Space.Compact style={{ width: "100%" }}>
+              <Form.Item
+                name="group_id"
+                noStyle
+                rules={[
+                  { required: true, message: "填群号" },
+                  { pattern: /^\d+$/, message: "群号只能是数字" },
+                ]}
+              >
+                <Input placeholder="例如 123456" />
+              </Form.Item>
+              <Button onClick={() => void fetchGroupName()} loading={nameLoading}>
+                拉取群名
+              </Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="note" label="备注">
-            <Input />
+            <Input placeholder="可手动改，或点“拉取群名”自动填" />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked">
             <Switch />

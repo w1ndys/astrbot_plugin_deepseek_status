@@ -86,7 +86,7 @@ def render_help(command_name: str) -> str:
     return (
         f"{command_name} —— DeepSeek 状态页监控\n"
         f"  {command_name}          查看当前状态\n"
-        f"  {command_name} {SUBCOMMAND_ON}       开启本会话通知\n"
-        f"  {command_name} {SUBCOMMAND_OFF}       关闭本会话通知\n"
+        f"  {command_name} {SUBCOMMAND_ON}       开启本群通知\n"
+        f"  {command_name} {SUBCOMMAND_OFF}       关闭本群通知\n"
         f"  {command_name} {SUBCOMMAND_HELP}     显示这条说明"
     )
