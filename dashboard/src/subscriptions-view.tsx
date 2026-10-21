@@ -6,6 +6,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Switch,
   Table,
@@ -16,7 +17,7 @@ import type { TableProps } from "antd";
 import { useEffect, useState } from "react";
 
 import { formatTime } from "./api";
-import type { Subscription, SubscriptionsResponse } from "./api";
+import type { GroupsResponse, Subscription, SubscriptionsResponse } from "./api";
 import { apiGet, apiPost } from "./bridge";
 
 type FormValues = {
@@ -37,6 +38,9 @@ export default function SubscriptionsView() {
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
+  const [groups, setGroups] = useState<GroupsResponse["groups"]>([]);
+  const [groupLoading, setGroupLoading] = useState(false);
+  const [filling, setFilling] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -56,6 +60,7 @@ export default function SubscriptionsView() {
 
   function openCreate() {
     setEditing(null);
+    setGroups([]);
     form.resetFields();
     form.setFieldsValue({ session: "", note: "", enabled: true });
     setModalOpen(true);
@@ -121,6 +126,35 @@ export default function SubscriptionsView() {
     }
   }
 
+  async function fillNotes() {
+    setFilling(true);
+    try {
+      const data = await apiPost<{ updated: number }>("groups/fill-notes");
+      message.success(`已更新 ${data.updated} 条群备注`);
+      await load();
+    } catch (error) {
+      message.error(errorText(error));
+    } finally {
+      setFilling(false);
+    }
+  }
+
+  async function loadGroups() {
+    setGroupLoading(true);
+    try {
+      const data = await apiGet<GroupsResponse>("groups");
+      setGroups(data.groups);
+      // 没有群时给明确提示，避免用户以为按钮坏了
+      if (data.groups.length === 0) {
+        message.info("aiocqhttp 没有返回任何群");
+      }
+    } catch (error) {
+      message.error(errorText(error));
+    } finally {
+      setGroupLoading(false);
+    }
+  }
+
   const columns: TableProps<Subscription>["columns"] = [
     { title: "ID", dataIndex: "id", width: 64 },
     {
@@ -174,9 +208,14 @@ export default function SubscriptionsView() {
       <Card
         title="订阅管理"
         extra={
-          <Button type="primary" onClick={openCreate}>
-            新增订阅
-          </Button>
+          <Space>
+            <Button onClick={() => void fillNotes()} loading={filling}>
+              拉取群备注
+            </Button>
+            <Button type="primary" onClick={openCreate}>
+              新增订阅
+            </Button>
+          </Space>
         }
       >
         <Table
@@ -195,6 +234,34 @@ export default function SubscriptionsView() {
         confirmLoading={saving}
         onCancel={() => setModalOpen(false)}
       >
+        {!editing && (
+          <Space style={{ marginBottom: 16 }} wrap>
+            <Button onClick={() => void loadGroups()} loading={groupLoading}>
+              从群列表选择
+            </Button>
+            {groups.length > 0 && (
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择群自动填充"
+                style={{ minWidth: 260 }}
+                options={groups.map((group) => ({
+                  value: group.group_id,
+                  label: `${group.group_name}（${group.group_id}）`,
+                }))}
+                onChange={(value: string) => {
+                  const group = groups.find((item) => item.group_id === value);
+                  if (group) {
+                    form.setFieldsValue({
+                      session: `aiocqhttp:GroupMessage:${group.group_id}`,
+                      note: group.group_name,
+                    });
+                  }
+                }}
+              />
+            )}
+          </Space>
+        )}
         <Form form={form} layout="vertical">
           <Form.Item
             name="session"

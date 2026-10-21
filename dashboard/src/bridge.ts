@@ -1,7 +1,7 @@
 // 封装 AstrBot 插件页面 bridge；只暴露页面用得到的 GET/POST。
 // 后端写操作全部注册为 POST，因为 bridge 没有 apiPut / apiDelete。
 // 开发模式下没有 bridge，用内存假数据，方便 pnpm dev 预览。
-import type { ChangeRecord, Settings, StatusResponse, Subscription } from "./api";
+import type { ChangeRecord, Group, Settings, StatusResponse, Subscription } from "./api";
 
 type PluginBridge = {
   apiGet(endpoint: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -74,11 +74,15 @@ function createDevBridge(): PluginBridge {
     {
       id: 1,
       session: "aiocqhttp:GroupMessage:123456",
-      note: "开发预览群",
+      note: "旧备注",
       enabled: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
+  ];
+  const groups: Group[] = [
+    { group_id: "123456", group_name: "开发预览群" },
+    { group_id: "654321", group_name: "另一个群" },
   ];
   const changes: ChangeRecord[] = [
     {
@@ -118,6 +122,9 @@ function createDevBridge(): PluginBridge {
       if (endpoint === "subscriptions") {
         return { subscriptions };
       }
+      if (endpoint === "groups") {
+        return { groups };
+      }
       if (endpoint === "history") {
         const page = Number(params?.page ?? 1);
         const size = Number(params?.size ?? 20);
@@ -137,6 +144,23 @@ function createDevBridge(): PluginBridge {
         Object.assign(settings, payload);
         status.enabled = settings.enabled;
         return { saved: true, settings };
+      }
+      if (endpoint === "groups/fill-notes") {
+        const names = new Map(groups.map((group) => [group.group_id, group.group_name]));
+        let updated = 0;
+        for (const item of subscriptions) {
+          const parts = item.session.split(":");
+          if (parts.length !== 3 || parts[1] !== "GroupMessage") {
+            continue;
+          }
+          const name = names.get(parts[2]);
+          if (name && item.note !== name) {
+            item.note = name;
+            item.updated_at = new Date().toISOString();
+            updated += 1;
+          }
+        }
+        return { updated };
       }
       if (endpoint === "subscriptions") {
         const session = String(payload.session ?? "");

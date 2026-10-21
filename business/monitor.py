@@ -196,6 +196,10 @@ class Monitor:
         if snapshot is None:
             return False
         message = render_summary(snapshot, self._tz)
+        # 群聊说“本群”，私聊说“本会话”；前缀与摘要同一条发出
+        where = "本群" if ":GroupMessage:" in session else "本会话"
+        prefix = f"DeepSeek 状态监控已开启，若 DeepSeek 官方状态变更，会推送到{where}"
+        message = f"{prefix}\n{message}"
         dedup_key = f"summary:{snapshot.fetched_at}"
         try:
             chain = MessageChain().message(message)
