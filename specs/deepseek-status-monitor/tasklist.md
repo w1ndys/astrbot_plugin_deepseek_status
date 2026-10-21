@@ -116,3 +116,8 @@
   - [x] 10.4 页面跟随 AstrBot WebUI 明暗主题
   - [x] 10.5 测试更新
   - [x] 10.6 平台 id 自适应（aiocqhttp / napcat）：按平台实例 id 重写 UMO 并迁移旧订阅
+
+- [x] 11. 命令开启补群名与拦截 LLM
+  - [x] 11.1 `dsstatus 开` 时备注为空自动拉群名写入
+  - [x] 11.2 所有命令分支调用 `event.stop_event()`，不再进入 LLM
+  - [x] 11.3 测试：群名写入与 stop_event

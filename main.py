@@ -99,6 +99,23 @@ class Plugin(Star):
                     subscription.enabled,
                 )
 
+    async def _fetch_group_name(self, group_id: str) -> str | None:
+        """按群号取群名；平台缺失或接口失败返回 None。"""
+        platform = self._onebot_platform()
+        if platform is None:
+            return None
+        try:
+            info = await platform.bot.call_action(
+                "get_group_info", group_id=int(group_id)
+            )
+        except Exception:
+            return None
+        if isinstance(info, dict):
+            name = info.get("group_name")
+            if name:
+                return str(name)
+        return None
+
     async def initialize(self) -> None:
         """插件加载后启动轮询；总开关关闭时 start 不建任务。"""
         await self.monitor.start()
@@ -120,25 +137,42 @@ class Plugin(Star):
         # 指令名可能被 AstrBot 指令管理改过，帮助用实际触发的首个 token
         command_name = event.message_str.strip().split(maxsplit=1)[0] or COMMAND_NAME
         raw_session = event.unified_msg_origin
-        # 产品只支持群聊；私聊直接忽略，不做任何提示
+        # 产品只支持群聊；私聊直接忽略，也不让消息继续进 LLM
         if ":GroupMessage:" not in raw_session:
+            event.stop_event()
             return
         # 平台 id 可能不是 aiocqhttp（如 napcat），统一改写成实例 id
         session = self._normalize_session(raw_session)
         if sub == SUBCOMMAND_HELP:
             yield event.plain_result(render_help(command_name))
+            event.stop_event()
             return
         if sub == SUBCOMMAND_ON:
-            enable_session(self.conn, session, "")
+            subscription, _ = enable_session(self.conn, session, "")
+            # 命令开启也补群名：备注为空时拉一次，写进订阅表
+            if not subscription.note:
+                group_id = session.split(":", 2)[2]
+                name = await self._fetch_group_name(group_id)
+                if name:
+                    update(
+                        self.conn,
+                        subscription.id,
+                        session,
+                        name,
+                        subscription.enabled,
+                    )
             # 全局监控或全局通知关闭时只写订阅，不查也不推
             if not self.monitor.config.enabled or not self.monitor.config.notify_enabled:
                 yield event.plain_result("已开启，全局通知关闭，暂不推送。")
+                event.stop_event()
                 return
             # 全局都开着才主动查一次并推当前状态
             if await self.monitor.push_summary(session):
                 # 确认消息本身已包含状态，不再额外回一条
+                event.stop_event()
                 return
             yield event.plain_result("已开启，但暂时取不到状态。")
+            event.stop_event()
             return
         if sub == SUBCOMMAND_OFF:
             # 关成功与从没订阅过给不同提示，避免用户以为操作生效
@@ -146,17 +180,21 @@ class Plugin(Star):
                 yield event.plain_result("已关闭本群通知。")
             else:
                 yield event.plain_result("本群还没有订阅。")
+            event.stop_event()
             return
         # 不带子命令就是查状态；监控总开关关掉时明确提示
         if not sub:
             if not self.monitor.config.enabled:
                 yield event.plain_result("监控已关闭。")
+                event.stop_event()
                 return
             timezone = resolve_timezone(self.monitor.config.display_timezone)
             yield event.plain_result(render_status_reply(self.monitor.snapshot(), timezone))
+            event.stop_event()
             return
         # 认不出的子命令按帮助处理，不静默失败
         yield event.plain_result(render_help(command_name))
+        event.stop_event()
 
     async def page_get_settings(self):
         """返回概览页要显示的五个非密钥配置。"""
@@ -374,19 +412,10 @@ class Plugin(Star):
         group_id = request.query.get("group_id", "")
         if not isinstance(group_id, str) or not group_id.strip().isdigit():
             return error_response("group_id 必须是纯数字群号")
-        platform = self._onebot_platform()
-        if platform is None:
-            return error_response("未找到 OneBot 平台")
-        try:
-            info = await platform.bot.call_action(
-                "get_group_info", group_id=int(group_id.strip())
-            )
-        except Exception as exc:
-            return error_response(f"拉取群名失败：{exc}")
-        name = info.get("group_name") if isinstance(info, dict) else ""
-        if not name:
-            return error_response("没有取到群名")
-        return json_response({"group_name": str(name)})
+        name = await self._fetch_group_name(group_id.strip())
+        if name is None:
+            return error_response("拉取群名失败或没有取到群名")
+        return json_response({"group_name": name})
 
     def _register_routes(self) -> None:
         """注册三个 Tab 用到的全部 Web API；路径参数用 <sub_id>。"""
