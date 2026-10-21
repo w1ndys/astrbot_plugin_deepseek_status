@@ -192,13 +192,15 @@ graph TD
 | 方法 | 路由 | 处理函数 | 说明 |
 |---|---|---|---|
 | GET | `/{PLUGIN}/settings` | `page_get_settings` | 读非密钥配置 |
-| PUT | `/{PLUGIN}/settings` | `page_save_settings` | 写回配置并 `save_config()` |
+| POST | `/{PLUGIN}/settings/save` | `page_save_settings` | 写回配置并 `save_config()` |
 | GET | `/{PLUGIN}/status` | `page_get_status` | 当前快照 |
 | GET | `/{PLUGIN}/subscriptions` | `page_list_subscriptions` | 订阅列表 |
 | POST | `/{PLUGIN}/subscriptions` | `page_create_subscription` | 新增订阅 |
-| PUT | `/{PLUGIN}/subscriptions/<sub_id>` | `page_update_subscription` | 编辑订阅 |
-| DELETE | `/{PLUGIN}/subscriptions/<sub_id>` | `page_delete_subscription` | 删除订阅 |
+| POST | `/{PLUGIN}/subscriptions/<sub_id>/update` | `page_update_subscription` | 编辑订阅 |
+| POST | `/{PLUGIN}/subscriptions/<sub_id>/delete` | `page_delete_subscription` | 删除订阅 |
 | GET | `/{PLUGIN}/history` | `page_list_changes` | 变更记录分页 |
+
+> 页面 bridge 只提供 `apiGet` / `apiPost`，所以写操作统一用 POST；不能注册 PUT / DELETE 后指望自定义页面调用。
 
 ### 前端 `dashboard/` 与 `views/status/`
 

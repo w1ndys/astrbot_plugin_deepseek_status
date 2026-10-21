@@ -75,20 +75,21 @@
   - [x] 5.10 `business/monitor.py::Monitor.snapshot`：返回最近一次成功快照
   - [x] 5.11 编排测试：假采集函数，覆盖基线、状态变化、同轮汇总、消失不推、变更记录写失败与清理
 
-- [ ] 6. 入口层
-  - [ ] 6.1 `main.py::Plugin.__init__`
-  - [ ] 6.2 `main.py::Plugin.initialize`
-  - [ ] 6.3 `main.py::Plugin.terminate`
-  - [ ] 6.4 `main.py::Plugin.dsstatus`（判断规则待定：子命令与参数）
-  - [ ] 6.5 `main.py::page_get_settings`
-  - [ ] 6.6 `main.py::page_save_settings`（时区校验与 400）
-  - [ ] 6.7 `main.py::page_get_status`
-  - [ ] 6.8 `main.py::page_list_subscriptions`
-  - [ ] 6.9 `main.py::page_create_subscription`
-  - [ ] 6.10 `main.py::page_update_subscription`
-  - [ ] 6.11 `main.py::page_delete_subscription`
-  - [ ] 6.12 `main.py::page_list_changes`：变更记录分页
-  - [ ] 6.13 入口层测试：非法请求体、非法时区、命令分支
+- [x] 6. 入口层
+  - [x] 6.0 `main.py::Plugin._register_routes`：注册 8 条 Web API
+  - [x] 6.1 `main.py::Plugin.__init__`：建库、转换配置、创建 Monitor、注册路由
+  - [x] 6.2 `main.py::Plugin.initialize`：启动轮询并记一行日志
+  - [x] 6.3 `main.py::Plugin.terminate`：先停轮询再关连接
+  - [x] 6.4 `main.py::Plugin.dsstatus`：状态 / 开 / 关 / 帮助；全局关时只写订阅不推送
+  - [x] 6.5 `main.py::page_get_settings`：返回五个非密钥配置
+  - [x] 6.6 `main.py::page_save_settings`：缺字段沿用当前值，非法整单 400，保存后热重启
+  - [x] 6.7 `main.py::page_get_status`：关闭时隐藏旧快照
+  - [x] 6.8 `main.py::page_list_subscriptions`：返回全部订阅（含停用）
+  - [x] 6.9 `main.py::page_create_subscription`：重复会话 400；启用时补推摘要
+  - [x] 6.10 `main.py::page_update_subscription`：停用改启用时补推摘要
+  - [x] 6.11 `main.py::page_delete_subscription`：不存在返回 404
+  - [x] 6.12 `main.py::page_list_changes`：变更记录分页，默认 20、最多 100
+  - [x] 6.13 入口层测试：注入 astrbot 替身，覆盖命令分支、配置校验与订阅接口
 
 - [ ] 7. 前端（一个视图，三个 Tab）
   - [ ] 7.1 `dashboard/` 工程骨架与构建配置

@@ -47,5 +47,7 @@ max-statements = 50
 preset = "default"
 python-version = "3.12"
 project-includes = ["entity/**/*.py", "data/**/*.py", "tests/**/*.py"]
+# 入口测试靠动态注入 astrbot 替身，模块属性运行期才存在；类型检查看不出这层结构。
+project-excludes = ["tests/test_main.py"]
 # typings/ 下是 AstrBot 的最小类型桩；显式声明，IDE 里的 pyrefly 也能解析。
 site-packages-path = ["typings"]
