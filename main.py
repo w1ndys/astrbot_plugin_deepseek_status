@@ -40,6 +40,8 @@ class Plugin(Star):
         # 数据库文件在插件数据目录；连接只在这里开一次
         self.conn = connect(get_db_path())
         init_db(self.conn)
+        # 旧库里的会话前缀可能是适配器名；按当前平台 id 迁移
+        self._migrate_sessions()
         # 原始 dict 只在这里转成 dataclass，业务层不碰配置键名
         self.monitor = Monitor(
             self.conn,
@@ -53,6 +55,49 @@ class Plugin(Star):
             context,
         )
         self._register_routes()
+
+    def _onebot_platform(self):
+        """找当前 OneBot 平台实例；平台 id 可自定义（如 napcat），不能按名字写死。"""
+        platform = self.context.get_platform("aiocqhttp")
+        if platform is not None:
+            return platform
+        manager = getattr(self.context, "platform_manager", None)
+        for item in getattr(manager, "platform_insts", []):
+            bot = getattr(item, "bot", None)
+            # OneBot 适配器的 bot 都有 call_action；用它识别，不依赖平台名
+            if bot is not None and hasattr(bot, "call_action"):
+                return item
+        return None
+
+    def _normalize_session(self, session: str) -> str:
+        """把 UMO 前缀改成平台实例 id；兼容历史 aiocqhttp 前缀。"""
+        platform = self._onebot_platform()
+        if platform is None:
+            return session
+        parts = session.split(":", 2)
+        if len(parts) != 3:
+            return session
+        return f"{platform.meta().id}:{parts[1]}:{parts[2]}"
+
+    def _migrate_sessions(self) -> None:
+        """启动时把已有订阅的会话前缀迁移到当前平台 id。"""
+        platform = self._onebot_platform()
+        if platform is None:
+            return
+        platform_id = platform.meta().id
+        for subscription in list_subscriptions(self.conn):
+            parts = subscription.session.split(":", 2)
+            if len(parts) != 3:
+                continue
+            session = f"{platform_id}:{parts[1]}:{parts[2]}"
+            if session != subscription.session:
+                update(
+                    self.conn,
+                    subscription.id,
+                    session,
+                    subscription.note,
+                    subscription.enabled,
+                )
 
     async def initialize(self) -> None:
         """插件加载后启动轮询；总开关关闭时 start 不建任务。"""
@@ -74,10 +119,12 @@ class Plugin(Star):
         """查状态、开/关本会话通知、显示帮助。"""
         # 指令名可能被 AstrBot 指令管理改过，帮助用实际触发的首个 token
         command_name = event.message_str.strip().split(maxsplit=1)[0] or COMMAND_NAME
-        session = event.unified_msg_origin
+        raw_session = event.unified_msg_origin
         # 产品只支持群聊；私聊直接忽略，不做任何提示
-        if ":GroupMessage:" not in session:
+        if ":GroupMessage:" not in raw_session:
             return
+        # 平台 id 可能不是 aiocqhttp（如 napcat），统一改写成实例 id
+        session = self._normalize_session(raw_session)
         if sub == SUBCOMMAND_HELP:
             yield event.plain_result(render_help(command_name))
             return
@@ -237,7 +284,10 @@ class Plugin(Star):
             return error_response("note 必须是字符串")
         if not isinstance(enabled, bool):
             return error_response("enabled 必须是布尔值")
-        session = f"aiocqhttp:GroupMessage:{group_id.strip()}"
+        platform = self._onebot_platform()
+        if platform is None:
+            return error_response("未找到 OneBot 平台")
+        session = f"{platform.meta().id}:GroupMessage:{group_id.strip()}"
         ok, reason = create(self.conn, session, note, enabled)
         if not ok:
             return error_response(reason or "新增订阅失败")
@@ -273,7 +323,10 @@ class Plugin(Star):
             return error_response("note 必须是字符串")
         if not isinstance(enabled, bool):
             return error_response("enabled 必须是布尔值")
-        session = f"aiocqhttp:GroupMessage:{group_id.strip()}"
+        platform = self._onebot_platform()
+        if platform is None:
+            return error_response("未找到 OneBot 平台")
+        session = f"{platform.meta().id}:GroupMessage:{group_id.strip()}"
         if not update(self.conn, target_id, session, note, enabled):
             return error_response("订阅不存在", status_code=404)
         pushed = False
@@ -321,9 +374,9 @@ class Plugin(Star):
         group_id = request.query.get("group_id", "")
         if not isinstance(group_id, str) or not group_id.strip().isdigit():
             return error_response("group_id 必须是纯数字群号")
-        platform = self.context.get_platform("aiocqhttp")
+        platform = self._onebot_platform()
         if platform is None:
-            return error_response("未找到 aiocqhttp 平台")
+            return error_response("未找到 OneBot 平台")
         try:
             info = await platform.bot.call_action(
                 "get_group_info", group_id=int(group_id.strip())

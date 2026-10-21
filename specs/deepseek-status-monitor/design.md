@@ -186,6 +186,7 @@ graph TD
 ### 入口层 `main.py`
 
 - `class Plugin(Star)`：`__init__` 打开数据库、注册全部路由、注册命令、创建 `Monitor`；`initialize()` 启动；`terminate()` 停止并关连接。
+- 平台发现：`_onebot_platform` 用 `bot.call_action` 识别 OneBot 实例，不按平台名写死；`_normalize_session` 把 UMO 前缀改成 `meta().id`，启动时迁移旧订阅，兼容 `aiocqhttp` 前缀与 `napcat` 等自定义实例 id。
 - `async def dsstatus(self, event, sub: str = "")`：会话内命令；只处理群聊，私聊直接忽略；`sub` 取「开 / 关 / 帮助」。帮助与未知子命令的文案用 `event.message_str` 首个 token 作为实际指令名。
 - Web API 路由：
 

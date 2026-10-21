@@ -60,11 +60,12 @@ class FakeBot:
 class FakePlatform:
     """替代 aiocqhttp 适配器，提供 meta 与 bot。"""
 
-    def __init__(self) -> None:
+    def __init__(self, platform_id: str = "aiocqhttp") -> None:
+        self.platform_id = platform_id
         self.bot = FakeBot()
 
     def meta(self):
-        return types.SimpleNamespace(id="aiocqhttp", name="aiocqhttp")
+        return types.SimpleNamespace(id=self.platform_id, name="aiocqhttp")
 
 
 class FakeStar:
@@ -277,6 +278,11 @@ class SettingsTest(PluginTestCase):
 class SubscriptionApiTest(PluginTestCase):
     """页面新增、编辑、删除订阅。"""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # 新订阅要按平台实例 id 拼 UMO，测试里挂一个假平台
+        self.context.platform = FakePlatform()
+
     async def test_create_rejects_bad_group_id(self):
         """群号不是纯数字时返回 400。"""
         self.web.request.payload = {"group_id": "abc"}
@@ -323,6 +329,39 @@ class GroupNameTest(PluginTestCase):
         self.web.request.query.params = {"group_id": "123"}
         result = await self.plugin.page_get_group_name()
         self.assertEqual(result["status_code"], 400)
+
+
+class PlatformIdTest(PluginTestCase):
+    """平台 id 不是 aiocqhttp 时，会话前缀要自适应。"""
+
+    def test_normalize_napcat_session(self):
+        """aiocqhttp 前缀改写成实际平台 id。"""
+        self.context.platform = FakePlatform("napcat")
+        session = self.plugin._normalize_session("aiocqhttp:GroupMessage:1")
+        self.assertEqual(session, "napcat:GroupMessage:1")
+
+    def test_migrates_existing_subscription(self):
+        """启动迁移把旧订阅前缀改成当前平台 id。"""
+        self.context.platform = FakePlatform("napcat")
+        subscription_store.create(
+            self.plugin.conn, "aiocqhttp:GroupMessage:2", "旧备注", True
+        )
+        self.plugin._migrate_sessions()
+        stored = subscription_store.get_by_session(
+            self.plugin.conn, "napcat:GroupMessage:2"
+        )
+        self.assertIsNotNone(stored)
+
+    async def test_create_uses_platform_id(self):
+        """页面新增订阅时用平台 id 拼 UMO。"""
+        self.context.platform = FakePlatform("napcat")
+        self.web.request.payload = {"group_id": "3"}
+        result = await self.plugin.page_create_subscription()
+        self.assertEqual(result["status_code"], 200)
+        stored = subscription_store.get_by_session(
+            self.plugin.conn, "napcat:GroupMessage:3"
+        )
+        self.assertIsNotNone(stored)
 
 
 class CommandTest(PluginTestCase):
