@@ -29,9 +29,13 @@ class FakeEvent:
     def __init__(self, message_str: str, session: str) -> None:
         self.message_str = message_str
         self.unified_msg_origin = session
+        self.stopped = False
 
     def plain_result(self, text: str) -> str:
         return text
+
+    def stop_event(self) -> None:
+        self.stopped = True
 
 
 class FakeContext:
@@ -367,10 +371,20 @@ class PlatformIdTest(PluginTestCase):
 class CommandTest(PluginTestCase):
     """dsstatus 命令分支。"""
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.context.platform = FakePlatform()
+
     async def collect(self, sub: str, message: str = "dsstatus 帮助") -> list[str]:
         """跑一次命令，收集所有回复文本。"""
         event = FakeEvent(message, "aiocqhttp:GroupMessage:1")
         return [item async for item in self.plugin.dsstatus(event, sub)]
+
+    async def test_command_stops_llm(self):
+        """命令处理完调用 stop_event，阻止继续进入 LLM。"""
+        event = FakeEvent("dsstatus 帮助", "aiocqhttp:GroupMessage:1")
+        _ = [item async for item in self.plugin.dsstatus(event, "帮助")]
+        self.assertTrue(event.stopped)
 
     async def test_help_uses_actual_command_name(self):
         """指令被改名后，帮助使用实际 token。"""
@@ -393,6 +407,8 @@ class CommandTest(PluginTestCase):
             self.plugin.conn, "aiocqhttp:GroupMessage:1"
         )
         self.assertIsNotNone(stored)
+        # 命令开启时备注为空，应自动拉群名写库
+        self.assertEqual(stored.note, "测试群")
 
     async def test_on_success_has_no_extra_reply(self):
         """开启成功时确认消息就是回复，命令不再多发一条。"""
