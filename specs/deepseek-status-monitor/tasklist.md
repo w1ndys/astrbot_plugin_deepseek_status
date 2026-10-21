@@ -115,3 +115,4 @@
   - [x] 10.3 编辑时可修改群号
   - [x] 10.4 页面跟随 AstrBot WebUI 明暗主题
   - [x] 10.5 测试更新
+  - [x] 10.6 平台 id 自适应（aiocqhttp / napcat）：按平台实例 id 重写 UMO 并迁移旧订阅
