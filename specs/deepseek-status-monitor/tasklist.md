@@ -99,6 +99,6 @@
   - [x] 7.5 构建产物与页面检查：三个 Tab 预览通过，产物随仓库提交
 
 - [ ] 8. 收尾
-  - [ ] 8.1 写 `README.md`（安装、五个配置项、命令、三个 Tab、数据目录）
-  - [ ] 8.2 真实网络冒烟（默认 `skip`，`DEEPSEEK_STATUS_LIVE=1` 才跑）
-  - [ ] 8.3 在 `w1ndys/dev-memory` 的项目 README 里更新本周期
+  - [x] 8.1 写 `README.md`：安装、五个配置项、命令、三个 Tab、数据目录、开发与限制
+  - [x] 8.2 真实网络冒烟：`tests/test_live.py`，默认 skip，`DEEPSEEK_STATUS_LIVE=1` 已实跑通过
+  - [x] 8.3 在 `w1ndys/dev-memory` 的项目 README 里更新本周期
